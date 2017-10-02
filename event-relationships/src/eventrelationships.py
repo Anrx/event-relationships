@@ -14,17 +14,17 @@ import ast
 import scipy
 import bisect
 import gc
-
+import pickle
 
 class EventRelationships:
     nl = "\n"
     sep = ";"
     enc = "utf-8"
 
-    def __init__(self, key=None, settings=None):
-        self.er = EventRegistry()  # gets key from settings.json file in module root by default
+    def __init__(self, connect=True,key=None, settings=None):
+        if connect: self.er = EventRegistry()  # gets key from settings.json file in module root by default
 
-    def GetEventClusters(self):  # supposed to return events clustered by concepts
+    def GetEventClusters(self):  # supposed to return events clustered by concepts, but no documentation is provided
         q = RequestEventsEventClusters(
             returnInfo=ReturnInfo(eventInfo=EventInfoFlags(), conceptInfo=ConceptInfoFlags()))
         print(q)
@@ -64,7 +64,6 @@ class EventRelationships:
         title = event["title"]
         title = title["eng"].replace(self.sep, ",") if "eng" in title else title[list(title.keys())[0]].replace(
             self.sep, ",")
-        # print("Doing event "+title+".")
         concepts = ",".join(map(lambda c: "(" + c["id"] + "," + str(c["score"]) + ")", event["concepts"])) if event[
             "concepts"] else "null"
         return (str(event["id"]) + self.sep +
@@ -108,15 +107,9 @@ class EventRelationships:
     def GenerateConceptsCsv(self, concepts, filename="concepts.csv", new=True):
         headers = ["conceptId", "uri", "title", "type"]
         if new:
-            # start=time.time()
             self.CreateConcepts(concepts, filename, headers)
-            # end=time.time()
-            # print("Create concepts execution time: "+str(end-start))
         else:
-            # start = time.time()
             self.UpdateConcepts(concepts, filename)
-            # end = time.time()
-            # print("Update concepts execution time: " + str(end - start))
 
     def GenerateConceptCsvLine(self, concept):
         label = concept["label"]
@@ -200,7 +193,11 @@ class EventRelationships:
     def NMF(self,x,nClusters,seed=None):
         model = NMF(n_components=nClusters, init='random', random_state=seed)
         W = model.fit_transform(x)
-        H = model.components_
+        labels=[]
+        for sample in W:
+            labels.append(numpy.argmax(sample))
+        #H = model.components_
+        return (model,labels)
 
     # dbscan clustering
     def DBSCAN(self,x,maxDistance,minSamples=10):
@@ -214,11 +211,51 @@ class EventRelationships:
     #k-means clustering
     def KMeans(self,x,nClusters,seed=None):
         kmeans = KMeans(n_clusters=nClusters, random_state=seed).fit(x)
-        #return kmeans
-        labels=kmeans.labels_
-        print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(x, labels))
+        return (kmeans,kmeans.labels_)
+        #labels=kmeans.labels_
+        #print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(x, labels))
+
 
     #optimize a clustering algorithm using silhouette score
-    def Cluster(self,x,method):
-        return 0
+    def Cluster(self, x, minClusters, maxClusters,step, method):
+        bestClusters=0
+        bestScore=-1
+        bestModel=None
+        print("Algorithm: "+method)
+        for i in range(minClusters, maxClusters,step):
+            if method == "KMeans":
+                model,labels=self.KMeans(x,i)
+            elif method == "NMF":
+                model,labels=self.NMF(x,i) # doesn't have labels, todo
+            elif method == "DBSCAN":
+                model=self.DBSCAN(i,i) # doesn't take n-samples, todo
+            silhouette=metrics.silhouette_score(x,labels)
+            print("Silhouette Coefficient: %0.3f" % silhouette)
+            print("n-clusters: "+str(i))
+            if silhouette>bestScore:
+                bestScore=silhouette
+                bestClusters=i
+                bestModel = model
+
+
+        print("Best score: "+str(bestScore) + " for n-clusters: "+str(bestClusters))
+        pickle.dump(bestModel,open(method+".obj","w",encoding=self.enc))
+
+    def ShowRelationships(self,model,labels,nClusters,eventsFilename,outputFilename):
+        events = pandas.read_csv(eventsFilename, sep=self.sep, encoding=self.enc,
+                                 dtype=str)  # read events into dataframe
+        clusters = [[] for i in range(nClusters)]
+        for i,label in enumerate(labels):
+            event=events.iloc[i,:]
+            clusters[label].append(event)
+
+        with open(outputFilename, "w", encoding=self.enc, newline=self.nl) as f:
+            for cluster in clusters:
+                f.write("New cluster: "+self.nl)
+                cluster.sort(key=lambda r: r["date"])
+                for event in cluster:
+                    f.write(str(event["title"])+" => ")
+                f.write(self.nl)
+
+
 
