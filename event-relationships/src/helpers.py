@@ -2,6 +2,7 @@ import numpy
 from scipy.sparse import csr_matrix
 from sklearn import metrics
 from bisect import bisect_left
+from datetime import date
 import os.path
 import pickle
 
@@ -25,7 +26,6 @@ def silhuette(matrix,labels):
 #uses bisection to find item in arr and returns false if item is not present in arr
 def binsearch(arr,item):
     index = bisect_left(arr,item)
-
     if index == len(arr) or arr[index] != item:
         return False
     return index
@@ -45,12 +45,20 @@ def file_exists(filename):
 
 #saves an object in binary
 def save_model(model,out):
-    file = open(out+ ".obj", "wb")
-    pickle.dump(model, file)
+    with open(out+ ".obj", "wb") as f:
+        pickle.dump(model, f)
 
 #loads an object from binary file
 def load_model(filename,enc):
-    file = open(filename+ ".obj", "rb")
-    model = pickle.load(file,encoding=enc)
+    with open(filename+ ".obj", "rb") as f:
+        model = pickle.load(f,encoding=enc)
     return model
 
+#normalizes given value to a range of 1
+def normalize(val,min,max):
+    return (val-min)/(max-min)
+
+#returns a date object from a string like YYYY-MM-DD
+def str_to_date(d):
+    d=d.split("-")
+    return date(int(d[0]),int(d[1]),int(d[2]))
