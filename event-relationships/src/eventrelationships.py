@@ -85,7 +85,7 @@ class EventRelationships:
         concepts = self.GetConcepts()
         selected = pandas.Series()
         for uri in conceptUris:
-            selected = selected.append(concepts.loc[concepts["uri"]==uri],ignore_index=True)
+            selected = selected.append(concepts.loc[concepts["uri"] == uri], ignore_index=True)
         return selected["conceptId"].astype(int)
 
 
@@ -500,6 +500,21 @@ class EventRelationships:
 
 
 
+    ### Multi-label prediction ######################################################################################################################
+    def RandomForest(self,conceptNames):
+        from sklearn.ensemble import RandomForestClassifier
+        conceptIds = self.ConceptNameToId(conceptNames)
+
+        clfs=[]
+        for id,name in zip(conceptIds,conceptNames):
+            x = numpy.genfromtxt(os.path.join(self.data_subdir, str(id) + "_" + name) + "_x.txt",delimiter=self.sep,skip_header=1)
+            y = numpy.genfromtxt(os.path.join(self.data_subdir, str(id) + "_" + name) + "_y.txt",delimiter=self.sep,skip_header=1)
+            model = RandomForestClassifier()
+            model.fit(x,y)
+            clfs = model
+
+
+
     ### Outlier Detection ######################################################################################################################
 
     def IsolationForest(self,x,n_estimators=100,max_samples="auto",contamination=0.1,max_features=1.0,bootstrap=False,n_jobs=1,seed=None,verbose=0):
@@ -510,19 +525,14 @@ class EventRelationships:
 
     ### Machine Learning ######################################################################################################################
 
-    def PrepareConceptPredictionDataset(self,labels):
-        clusters= self.GetClusters(labels)
-        #TODO
-
-    #prints cluster shapes
+    # show cluster shapes
     def CountClusterSize(self,labels):
-        #cs=[cluster[1].shape[0] for cluster in self.GetClusters(labels).groupby(level=0)]
         cs = dict.fromkeys(set(labels),0)
         for label in labels:
             cs[label]+=1
         self.Plot(list(cs.values()))
 
-
+    # compute top concepts for each cluster
     def GetClusterConcepts(self,labels,n_concepts=20,method="frequency",out=None):
         clusters = self.GetClusters(labels)
         df=pandas.DataFrame(columns=["cluster","concepts"])
@@ -545,10 +555,14 @@ class EventRelationships:
 
         return df
 
-    def TrainTestSplit(self,x,test_size=0.25,train_size=None,seed=None,shuffle=True,stratify=None):
-        train,test = train_test_split(x,test_size=test_size,train_size=train_size,random_state=seed,shuffle=shuffle,stratify=stratify)
-        train.to_csv(os.path.join(self.data_subdir, self.events_filename) + "_train.csv",sep=self.sep,index=False,encoding=self.enc)
-        test.to_csv(os.path.join(self.data_subdir, self.events_filename) + "_test.csv",sep=self.sep,index=False,encoding=self.enc)
+    # split dataset into train and test sets by date
+    # date: "yyyy-mm-dd"
+    def TrainTestSplit(self,date):
+        events = self.GetEvents()
+        train = events.loc[events.date<date]
+        test = events.loc[events.date>=date]
+        train.to_csv(os.path.join(self.data_subdir, self.events_filename) + "_" + date+"_train.csv",sep=self.sep,index=False,encoding=self.enc)
+        test.to_csv(os.path.join(self.data_subdir, self.events_filename) + "_" + date+"_test.csv",sep=self.sep,index=False,encoding=self.enc)
         return train,test
 
     #optimize a clustering algorithm using silhouette score
@@ -588,7 +602,7 @@ class EventRelationships:
             plt.xlabel("n_clusters")
             plt.show()
 
-    #write all the clusters to a file in a human readable format
+    # write all the clusters to a file in a human readable format
     def ShowRelationships(self,labels,out):
         clusters = self.GetClusters(labels)
 
@@ -599,8 +613,9 @@ class EventRelationships:
                     f.write(str(event["title"])+" ["+event["date"]+"] => ")
                 f.write(self.nl)
 
+    # same as above, but with clusters of clusters
     def ShowClusterRelationships(self,labels,clusterLabels,out):
-        clusters=self.GetClusters(labels,clusterLabels=clusterLabels)
+        clusters=self.GetClusters(labels,clusterLabels=clusterLabels,avgDate=True)
 
         tab ="\t"
         with open(os.path.join(self.results_subdir, out) + ".txt", "w", encoding=self.enc, newline=self.nl) as f:
@@ -612,8 +627,8 @@ class EventRelationships:
                         f.write(str(event["title"]) + " [" + event["date"] + "] => ")
                     f.write(self.nl)
 
-    #adjust the cluster centers according to the event with the highest social score in each cluster
-    def AdjustCentroids(self,x,labels,method):
+    # adjust the cluster centers according to the event with the highest social score in each cluster and recluster
+    def AdjustCentroids(self,x,labels,method="KMeans"):
         clusters=self.GetClusters(labels)
 
         # find event with the highest social score in each cluster
@@ -628,8 +643,8 @@ class EventRelationships:
             model,labels=self.KMeans(x, len(set(labels)),init=centers,n_init=1)
         return (model,labels)
 
-    #compile the clustered events in a multiindex dataframe
-    def GetClusters(self,labels,sorted=True,events=None,clusterLabels=None):
+    # compile the clustered events in a multiindex dataframe
+    def GetClusters(self,labels,sorted=True,events=None,clusterLabels=None,avgDate=False):
         if events is None:
             events=self.GetEvents()
             events["cluster"]=labels
@@ -646,7 +661,7 @@ class EventRelationships:
                 groupLabels = g["cluster"].values
                 e = events.loc[events["cluster"].isin(set(groupLabels))]
 
-                clusters[clusterLabel] = self.GetClusters(events=e,labels=groupLabels)
+                clusters[clusterLabel] = self.GetClusters(events=e,labels=groupLabels,avgDate=avgDate)
             print("done")
         else:
             clusters = {label: pandas.DataFrame() for label in set(labels)}
@@ -654,12 +669,13 @@ class EventRelationships:
             for label in set(labels):
                 e = events.loc[events["cluster"]==label]
 
-                eventDates = e["date"]
-                dateMin = str_to_date(eventDates.min())
-                dateMax = str_to_date(eventDates.max())
-                dateDelta = (dateMax - dateMin).days
-                avgDate= dateMin+timedelta(days=dateDelta/2)
-                e["avgDate"]=avgDate.strftime('%Y-%m-%d')
+                if avgDate:
+                    eventDates = e["date"]
+                    dateMin = str_to_date(eventDates.min())
+                    dateMax = str_to_date(eventDates.max())
+                    dateDelta = (dateMax - dateMin).days
+                    avgDate= dateMin+timedelta(days=dateDelta/2)
+                    e["avgDate"]=avgDate.strftime('%Y-%m-%d')
 
                 clusters[label] = clusters[label].append(e, ignore_index=True)
                 if sorted: clusters[label].sort_values("date",inplace=True)
@@ -668,7 +684,7 @@ class EventRelationships:
 
         return res
 
-    #computes concept frequency in a set of events
+    # compute concept score in a set of events
     def GetTopConcepts(self,events):
         counter = defaultdict(int)
         for _,event in events.iterrows():
@@ -678,14 +694,22 @@ class EventRelationships:
 
         return counter
 
+    # compute dictionary of events with a specific concept
+    def EventsByConceptScore(self,events,conceptId,min_score=50):
+        counter={}
+        for _,event in events.iterrows():
+            conceptsList = ast.literal_eval(event["concepts"])
+            for id, score in conceptsList:
+                if id==conceptId and score>=min_score:
+                    counter[event.eventId]=event
+                    break
 
-    #search events by list of concepts and return the surrounding clustered events
+        return counter
+
+    # search clusters by list of concepts
     def FindEventRelationships(self,labels,conceptNames, n_clusters=10):
         # get selected concepts
-        conceptUris = [self.er.getConceptUri(con) for con in conceptNames]
-        concepts = self.GetConcepts()
-        selected = concepts.loc[concepts["uri"].isin(conceptUris)]
-        selectedIds = selected["conceptId"].astype(int)
+        selectedIds = self.ConceptNameToId(conceptNames)
 
         clusters = self.GetClusters(labels)
 
@@ -711,6 +735,7 @@ class EventRelationships:
                     f.write(str(event["title"]) + " [" + event["date"] + "] => ")
                 f.write(self.nl)
 
+    # compute dataset of concepts by date for heatmap visualisation
     def ConceptHeatmap(self,limit=0,out=None,min_events=5):
         events = self.GetEvents()
         eventDates=events["date"]
@@ -733,7 +758,8 @@ class EventRelationships:
             df.to_csv(os.path.join(self.data_subdir,out)+".csv",sep=self.sep,na_rep=0,encoding=self.enc)
         return df
 
-    def AssociationRules(self,out=None):
+    # compute dataset from heatmap for association rule learning
+    def AssociationRulesFromHeatmap(self,out=None):
         heatmap = pandas.read_csv("ConceptHeatmap.csv", sep=self.sep, encoding=self.enc, index_col=0, na_values=0)  # read frequencies into dataframe
         events = self.GetEvents()
         eventDates = events["date"]
@@ -760,19 +786,65 @@ class EventRelationships:
 
         return df
 
+    # compute set of concepts used in the model
+    def DatasetConcepts(self,min_events=5):
+        with open(os.path.join(self.data_subdir, "conceptCount") + ".json", "r", encoding=self.enc) as f:
+            conceptCount = json.load(f)
+
+        events=self.GetEvents()
+        concepts=set()
+        for _,event in events.iterrows():
+            conceptList = ast.literal_eval(event.concepts)
+            for id,score in conceptList:
+                if conceptCount[str(id)][1]>=min_events:
+                    concepts.add(str(id))
+
+        return concepts
+
+    # compile dataset for prediction
+    def RandomForestFromClusters(self,labels,conceptNames,groupLabels=None,min_events=10,min_score=50):
+        clusters = self.GetClusters(labels, clusterLabels=groupLabels,avgDate=False)
+        conceptIds=self.ConceptNameToId(conceptNames)
+        usedConcepts=self.DatasetConcepts()
+        for id,name in zip(conceptIds,conceptNames):
+            with open(os.path.join(self.data_subdir, str(id) + "_" + name) + "_x.txt", "w", encoding=self.enc,newline=self.nl) as x, open(os.path.join(self.data_subdir, str(id) + "_" + name) + "_y.txt", "w", encoding=self.enc, newline=self.nl) as y:
+                x.write(self.sep.join(usedConcepts) + self.nl)
+                y.write(self.sep.join(usedConcepts) + self.nl)
+                for _, cluster in clusters.groupby(level=0):
+                    events = self.EventsByConceptScore(cluster,id,min_score=min_score)
+                    for eventId,event in events.items():
+                        prev=cluster.loc[cluster.date<event.date]
+                        fol=cluster.loc[cluster.date>event.date]
+                        if len(prev)>=min_events and len(fol)>=min_events:
+                            self.Compile(prev,usedConcepts,x,min_score=min_score)
+                            self.Compile(fol,usedConcepts,y,min_score=min_score)
+
+    # compile dataset of attributes
+    def Compile(self,events,conceptIds,f,min_score=50):
+        vocab = OrderedDict({int(id): "0" for id in conceptIds})
+        for _,event in events.iterrows():
+            conceptList = ast.literal_eval(event.concepts)
+            for id,score in conceptList:
+                if id in vocab and score>=min_score:
+                    vocab[id]="1"
+
+        f.write(self.sep.join(list(vocab.values()))+self.nl)
+
+    # perform apriori algorithm
     def Apriori(self,support=0.01,minlen=1):
         data=pandas.read_csv(os.path.join(self.data_subdir, "AssociationRules")+".csv", sep=self.sep, encoding=self.enc, index_col=0)
-
         frequent_itemsets = apriori(data, min_support=0.05, use_colnames=True)
-
         print(frequent_itemsets)
 
+    # compute mean by dataframe row
     def NoZeroMean(self,d):
-        #d.loc[d == 0,d==0] = numpy.nan #switch with replace or something
         return numpy.nanmean(d.values,axis=1)
 
 
+
     ### Data Visualisation #########################################################################################################################
+
+    # plot data
     def Plot(self,x,type="bar"):
         if type.lower()=="bar":
             fig, ax = plt.subplots()
@@ -784,9 +856,9 @@ class EventRelationships:
                 #leaf_rotation=90.,  # rotates the x axis labels
                 #leaf_font_size=8.,  # font size for the x axis labels
             )
-            plt.show()
         plt.show()
 
+    # show concept frequency line graph by date
     def ConceptFrequencyLineGraph(self,conceptNames,method=None):
         heatmap = pandas.read_csv("ConceptHeatmap.csv", sep=self.sep, encoding=self.enc, index_col=0)  # read frequencies into dataframe
         conceptIds = self.ConceptNameToId(conceptNames)
@@ -803,6 +875,7 @@ class EventRelationships:
 
         plt.show()
 
+    # show concept frequency heatmap by date
     def ConceptFrequencyHeatmap(self,conceptNames=None,n_days=100,n_concepts=50):
         heatmap = self.GetHeatmap()
         if n_concepts>0:
@@ -845,8 +918,10 @@ class EventRelationships:
         plt.show()
 
 
+
     ### Data Analysis #########################################################################################################################
 
+    # compute correlations between concept frequencies
     def ComputeCorrelations(self,method=None):
         heatmap = pandas.read_csv("ConceptHeatmap.csv", sep=self.sep, encoding=self.enc, dtype=str,
                                   index_col=0)  # read frequencies into dataframe
@@ -866,8 +941,7 @@ class EventRelationships:
             print(best)
             break
 
-
-    # find time series correlation between a and b series
+    # compute time series correlation between a and b series
     def Correlation(self,a,b):
         correlation = a.corr(b)
         return correlation
@@ -880,6 +954,7 @@ class EventRelationships:
         elif method.lower() == "median".lower():
             return roll.median()
 
+    # compute concept frequency and order by method
     def CountConcepts(self,out=None,events=None,method="frequency",desc=False):
         if events is None:
             events = self.GetEvents()
@@ -909,6 +984,7 @@ class EventRelationships:
                 json.dump(v, f, indent=2)
 
         return v
+
 
 
     ### Debugging ######################################################################################################################

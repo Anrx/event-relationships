@@ -94,7 +94,20 @@ if __name__ == '__main__':
     #er.ShowRelationships(labels, "Affinity_min5_train")
 
     #show cluster relationships
-    er = EventRelationships("events_train", "concepts", "categories", connect=False)
-    model = load_model("KMeans_2000_date_wgt5000_min5_train", er.enc)
-    groupModel = load_model("Hierarichal_200_clusters", er.enc)
-    er.ShowClusterRelationships(model.labels_,groupModel.labels_,"Hierarichal_200_clusters")
+    #er = EventRelationships("events_train", "concepts", "categories", connect=False)
+    #model = load_model("KMeans_2000_date_wgt5000_min5_train", er.enc)
+    #groupModel = load_model("Hierarichal_200_clusters", er.enc)
+    #er.ShowClusterRelationships(model.labels_,groupModel.labels_,"Hierarichal_200_clusters")
+
+### random forest prediction ######################################################################################################################
+    #er = EventRelationships("events_train", "concepts", "categories", connect=True)
+    #model = load_model("KMeans_2000_date_wgt5000_min5_train", er.enc)
+    #er.RandomForestFromClusters(model.labels_,["war","donald trump"])
+    #er.RandomForest(["war","donald trump"])
+
+
+
+### testing ######################################################################################################################
+    er = EventRelationships("events", "concepts", "categories", connect=False)
+    er.TrainTestSplit("2017-09-01")
+
