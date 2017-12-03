@@ -22,6 +22,7 @@ if __name__ == '__main__':
     #er.CsrMatrix("csr_matrix_train",min_events=0)
     #er.CsrMatrix("csr_matrix_min2_train",min_events=2)
     #er.CsrMatrix("csr_matrix_normalized_train",min_events=0,normalized=True)
+    #er.CsrMatrix("csr_matrix_min2_date_wgt1000_train",min_events=2,normalized=True,concept_wgt=100,date_wgt=1000)
 
 
 
@@ -36,9 +37,9 @@ if __name__ == '__main__':
 
 ### clustering without silhuette optimization ######################################################################################################################
     #er=EventRelationships("events_train","concepts","categories",connect=False)
-    #matrix =load_sparse_csr("csr_matrix_normalized_train.npz")
-    #model = er.AgglomerativeClustering(matrix,imp="scipy")
-    #model,labels = er.KMeans(matrix,1000,verbose=1,useMiniBatchKMeans=True,out="KMeans_1000_normalized_train_miniBatch")
+    #matrix =load_sparse_csr("csr_matrix_min2_date_wgt10000_train.npz")
+
+    #model,labels = er.KMeans(matrix,1000,verbose=1,useMiniBatchKMeans=True,out="MiniBatchKMeans_1000_min2_date_wgt10000_train")
 
     #model=load_model("KMeans_2000_date_wgt5000_min5_train",er.enc)
     #er.CountClusterSize(labels)
@@ -49,9 +50,9 @@ if __name__ == '__main__':
     #model,labels = er.DBSCAN(matrix,maxDistance=0.5,minSamples=5)
     #model,labels = er.AffinityPropagation(matrix)
     #model,labels = er.AgglomerativeClustering(matrix.toarray(),n_clusters=1000,affinity="l1",linkage="average")
+    #model = er.AgglomerativeClustering(matrix,imp="scipy")
     #silhuette(matrix,labels)
-    #save_model(model,"KMeans_100_min5_train")
-    #er.ShowRelationships(labels, "KMeans_100_min5_train")
+    #er.ShowRelationships(labels, "MiniBatchKMeans_1000_min2_date_wgt10000_train")
 
     #find specific clusters
     #er=EventRelationships("events","concepts","categories",connect=True)
@@ -101,13 +102,15 @@ if __name__ == '__main__':
 
 ### random forest prediction ######################################################################################################################
     #er = EventRelationships("events_train", "concepts", "categories", connect=True)
-    #model = load_model("KMeans_2000_date_wgt5000_min5_train", er.enc)
-    #er.RandomForestFromClusters(model.labels_,["war","donald trump"])
+    #model = load_model("MiniBatchKMeans_1000_min2_date_wgt5000_train", er.enc)
+    #er.RandomForestFromClusters(model.labels_,["war","donald trump"],min_events=0)
     #er.RandomForest(["war","donald trump"])
 
+    er = EventRelationships("events", "concepts", "categories", connect=False)
+    er.CrossValidate()
 
 
 ### testing ######################################################################################################################
-    er = EventRelationships("events", "concepts", "categories", connect=False)
-    er.TrainTestSplit("2017-09-01")
+    #er = EventRelationships("events", "concepts", "categories", connect=False)
+    #er.TrainTestSplit("2017-09-01")
 

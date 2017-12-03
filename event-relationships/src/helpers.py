@@ -5,6 +5,7 @@ from bisect import bisect_left
 from datetime import date
 import os.path
 import pickle
+import json
 
 #saves a spare csr matrix as .npz
 def save_sparse_csr(filename, x):
@@ -62,3 +63,12 @@ def normalize(val,min,max):
 def str_to_date(d):
     d=d.split("-")
     return date(int(d[0]),int(d[1]),int(d[2]))
+
+def save_as_json(obj,out):
+    with open(out + ".json", "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
+
+def load_as_json(fileName):
+    with open(fileName + ".json", "r", encoding="utf-8") as f:
+        obj = json.load(f)
+    return obj
