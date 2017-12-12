@@ -6,6 +6,7 @@ from datetime import date
 import os.path
 import pickle
 import json
+import ast
 
 #saves a spare csr matrix as .npz
 def save_sparse_csr(filename, x):
@@ -72,3 +73,10 @@ def load_as_json(fileName):
     with open(fileName + ".json", "r", encoding="utf-8") as f:
         obj = json.load(f)
     return obj
+
+def HasConcept(concepts,cid):
+    clist=ast.literal_eval(concepts)
+    for id,_ in clist:
+        if id==cid:
+            return True
+    return False

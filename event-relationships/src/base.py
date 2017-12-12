@@ -22,7 +22,7 @@ if __name__ == '__main__':
     #er.CsrMatrix("csr_matrix_train",min_events=0)
     #er.CsrMatrix("csr_matrix_min2_train",min_events=2)
     #er.CsrMatrix("csr_matrix_normalized_train",min_events=0,normalized=True)
-    #er.CsrMatrix("csr_matrix_min2_date_wgt1000_train",min_events=2,normalized=True,concept_wgt=100,date_wgt=1000)
+    #er.CsrMatrix("csr_matrix_min5_date_wgt5000_train",min_events=5,normalized=True,concept_wgt=100,date_wgt=5000)
 
 
 
@@ -37,17 +37,20 @@ if __name__ == '__main__':
 
 ### clustering without silhuette optimization ######################################################################################################################
     #er=EventRelationships("events_train","concepts","categories",connect=False)
-    #matrix =load_sparse_csr("csr_matrix_min2_date_wgt10000_train.npz")
+    #matrix =load_sparse_csr("csr_matrix_min5_date_wgt5000_train.npz")
 
     #model,labels = er.KMeans(matrix,1000,verbose=1,useMiniBatchKMeans=True,out="MiniBatchKMeans_1000_min2_date_wgt10000_train")
 
     #model=load_model("KMeans_2000_date_wgt5000_min5_train",er.enc)
-    #er.CountClusterSize(labels)
 
     #CustomKmeans(matrix,100)
     #model,labels,score=er.KMeans(matrix,100,verbose=1,useMiniBatchKMeans=False)
-    #model,labels=er.NMF(matrix,1000,seed=1,maxiter=30)
-    #model,labels = er.DBSCAN(matrix,maxDistance=0.5,minSamples=5)
+    #model,labels=er.NMF(matrix,1000)
+    #model,labels = er.DBSCAN(matrix,max_distance=50,min_samples=5,metric="cosine",leaf_size=100)
+    #model,labels=er.Birch(matrix,copy=False)
+    #model,labels = er.MeanShift(matrix.toarray())
+    #model,labels = er.SpectralClustering(matrix)
+    #er.CountClusterSize(labels)
     #model,labels = er.AffinityPropagation(matrix)
     #model,labels = er.AgglomerativeClustering(matrix.toarray(),n_clusters=1000,affinity="l1",linkage="average")
     #model = er.AgglomerativeClustering(matrix,imp="scipy")
