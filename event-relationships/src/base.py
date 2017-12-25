@@ -110,7 +110,7 @@ if __name__ == '__main__':
     #er.RandomForest(["war","donald trump"])
 
     er = EventRelationships("events", "concepts", "categories", connect=False)
-    er.CrossValidate()
+    er.CrossValidateByCluster()
 
 
 ### testing ######################################################################################################################

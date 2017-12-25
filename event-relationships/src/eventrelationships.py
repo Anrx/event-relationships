@@ -383,6 +383,7 @@ class EventRelationships:
 
     #compute csr matrix from data
     def CsrMatrix(self,out=None,normalized=False,concept_wgt=1,include_date=False,date_wgt=1,date_max=None,min_events=5,events=None):
+        print("Making CSR matrix")
         if events is None:
             events = self.GetEvents()
         eventsConcepts = events["concepts"]  # get just the event concepts
@@ -453,6 +454,7 @@ class EventRelationships:
 
     #k-means clustering
     def KMeans(self, x, n_clusters, seed=None, init="k-means++", max_iter=300, n_init=10, n_jobs=1,verbose=0, useMiniBatchKMeans=False,out=None):
+        print("Training K-Means")
         if useMiniBatchKMeans:
             kmeans = MiniBatchKMeans(
                 n_clusters=n_clusters,
@@ -541,14 +543,162 @@ class EventRelationships:
 
 
 
+    ### Cross validation ######################################################################################################################
+
+    def CrossValidateByConcept(self,date_start="2017-09-01",date_end="2017-09-30",print_rel=False,min_score=30,n_clusters=1000,date_wgt=2500,seed=1):
+        dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end)).tolist()
+        scores = defaultdict(list)
+        for date in dateRange:
+            date = date.strftime('%Y-%m-%d')
+            print(date)
+
+            train,test = self.TrainTestSplit(date,out=False)
+
+            trainMatrix,trainVocab=self.CsrMatrix(normalized=True,concept_wgt=100,include_date=True,date_wgt=date_wgt,events=train,min_events=5,date_max=date)
+            trainModel,trainLabels = self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=True,seed=seed)
+            train["cluster"]=trainLabels
+
+            testMatrix = self.CsrMatrix(normalized=True, concept_wgt=100, include_date=True, date_wgt=date_wgt, events=test,min_events=5)[0]
+            testModel, testLabels = self.KMeans(testMatrix, n_clusters, useMiniBatchKMeans=True,seed=seed)
+            test["cluster"]=testLabels
+
+            today=test.loc[test.date==date]
+
+            conceptIds=self.TopConcepts(today,min_score)
+            dset=self.DatasetByConcept(events=train,conceptIds=conceptIds,min_events=2,out=True)
+            #dset=None
+            clfs=self.RandomForest(dset, keys=conceptIds, from_file=True)
+
+            for conceptId in conceptIds:
+                if clfs[conceptId] is not None:
+                    print("Processing concept: "+str(conceptId))
+                    xset = OrderedDict({cid: [] for cid in list(dset[conceptId][0].keys())})
+                    yset = OrderedDict({cid: [] for cid in list(dset[conceptId][1].keys())})
+                    for _,event in today.iterrows():
+                        if HasConcept(event.concepts,conceptId):
+                            testCluster=test.loc[test.cluster==event.cluster]
+                            sampleCsr=self.CsrFromVocab(trainVocab,event,concept_wgt=100,date_wgt=date_wgt)
+                            sampleCluster= trainModel.predict(sampleCsr)
+                            trainCluster = train.loc[train.cluster==sampleCluster[0]]
+                            self.Compile(xset,min_score,events=trainCluster)
+                            self.Compile(yset,min_score,events=testCluster)
+
+                            #set_attr = set(np.where(list(xset.values)()[i])[0])
+                            #ids = [[xset.keys()][i] for i in set_pred]
+                            #names = self.ConceptIdToName(ids)
+                            #print("Attributes: " + names)
+                    train_x = np.asarray(list(xset.values()))
+                    test_y = np.asarray(list(yset.values()))
+
+                    train_y=clfs[conceptId].predict(train_x.T)
+                    score=self.HammingScore(test_y.T,train_y,verbose=True,cids_y=[yset.keys()])
+                    print("Hamming score for " + str(conceptId) + " is " + str(score))
+                    scores[conceptId].append(score) #todo
+
+    def CrossValidateByCluster(self,date_start="2017-09-01",date_end="2017-09-30",print_rel=False,min_score=50,n_clusters=1000,window_size=7,verbose=True):
+        dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end)).tolist()
+        scores = defaultdict(list)
+        for date in dateRange:
+            date = date.strftime('%Y-%m-%d')
+            print(date)
+
+            train,test = self.TrainTestSplit(date,out=False)
+
+            trainMatrix,trainVocab=self.CsrMatrix(events=train,min_events=5)
+            trainModel,trainLabels = self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=True)
+            train["cluster"]=trainLabels
+
+            today=test.loc[test.date==date]
+
+            todayCsr=self.CsrFromVocab(trainVocab,today)
+            todayLabels= trainModel.predict(todayCsr)
+            today["cluster"]=todayLabels
+            todayClusters=set(todayLabels)
+
+            dset=self.DatasetByCluster(events=train,keys=todayClusters,out=True,window_size=window_size,min_score=min_score,verbose=verbose)
+            clfs=self.RandomForest(dset, keys=todayClusters, from_file=False)
+
+            for todayCluster in todayClusters:
+                if clfs[todayCluster] is not None:
+                    trainCluster=train.loc[train.cluster==todayCluster]
+                    group=today.loc[today.cluster==todayCluster]
+
+                    xset = OrderedDict({cid: [] for cid in list(dset[todayCluster][0].keys())})
+                    yset = OrderedDict({cid: [] for cid in list(dset[todayCluster][1].keys())})
+
+                    startDate = (str_to_date(date) - timedelta(days=window_size)).strftime('%Y-%m-%d')
+                    cond = np.logical_and(trainCluster.date>=startDate, trainCluster.date<date)
+                    self.Compile(xset, min_score,events=trainCluster.loc[cond])
+                    self.Compile(yset, min_score,events=group)
+
+                    train_x = np.asarray(list(xset.values()))
+                    test_y = np.asarray(list(yset.values()))
+
+                    train_y=clfs[todayCluster].predict(train_x.T)
+                    score=self.HammingScore(test_y.T,train_y,verbose=verbose,cids_y=[yset.keys()])
+                    print("Hamming score for " + str(todayCluster) + " is " + str(score))
+                    scores[todayCluster].append(score) #todo
+            break
+
     ### Multi-label prediction ######################################################################################################################
 
+    def DatasetByCluster(self,labels=None,events=None,keys=None,min_events=1,min_score=50,out=False,window_size=7,verbose=True):
+        if verbose:
+            print("Making dataset")
+
+        if events is None:
+            events=self.GetEvents()
+            events["cluster"]=labels
+        if keys is None:
+            keys=set(events.cluster.values)
+
+        dset={}
+        for key in keys:
+            if verbose:
+                print(str(key))
+            cluster = events.loc[events.cluster==key]
+            xset=OrderedDict()
+            yset=OrderedDict()
+
+            dateMin = str_to_date(cluster.date.min())
+            dateMax = str_to_date(cluster.date.max())
+            startDate=dateMin
+            endDate = (dateMin + timedelta(days=window_size))
+            dates = pd.to_datetime(cluster.date)
+
+            samples=0
+            cluster.sort_values("date", inplace=True)
+
+            while(endDate<=dateMax):
+                xCond = np.logical_and(dates >= startDate, dates < endDate)
+                xWindow = cluster.loc[xCond]
+                yCond = dates == endDate
+                yWindow = cluster.loc[yCond]
+
+                self.Compile(xset, min_score, samples=samples, events=xWindow)
+                self.Compile(yset, min_score, samples=samples, events=yWindow)
+
+                samples+=1
+                startDate = endDate
+                endDate = (endDate + timedelta(days=window_size))
+            x = np.asarray(list(xset.values()), dtype=int)
+            y = np.asarray(list(yset.values()), dtype=int)
+            if verbose:
+                print("n features: " + str(x.shape[0]))
+                print("n classes: " + str(y.shape[0]))
+                print("n samples: " + str(x.shape[1]) if len(x.shape)>1 else 1)
+            if out and x.size > 0 and y.size > 0:
+                np.savetxt(os.path.join(self.data_subdir, str(key)) + "_x.txt", x.T, delimiter=self.sep, header=self.sep.join(map(str, list(xset.keys()))), fmt="%d")
+                np.savetxt(os.path.join(self.data_subdir, str(key)) + "_y.txt", y.T, delimiter=self.sep, header=self.sep.join(map(str, list(yset.keys()))), fmt="%d")
+            dset[key] = (xset, yset)
+        return dset
+
     # compile dataset for prediction
-    def DatasetFromClusters(self,labels=None,events=None,conceptNames=None,conceptIds=None,min_events=10,min_score=50,out=False):
+    def DatasetByConcept(self,labels=None,events=None,conceptNames=None,conceptIds=None,min_events=10,min_score=50,out=False):
         print("Making dataset")
         if events is None:
             events=self.GetEvents()
-            events.cluster=labels
+            events["cluster"]=labels
 
         if conceptIds is None:
             conceptIds=self.ConceptNameToId(conceptNames)
@@ -567,8 +717,8 @@ class EventRelationships:
                             prev=cluster.loc[cluster.date<event.date]
                             fol=cluster.loc[cluster.date>event.date]
                             if len(prev)>=min_events and len(fol)>=min_events:
-                                self.Compile(prev,xset,min_score,samples=samples)
-                                self.Compile(fol,yset,min_score,samples=samples)
+                                self.Compile(xset,min_score,samples=samples,events=prev)
+                                self.Compile(yset,min_score,samples=samples,events=fol)
                                 samples+=1
             x=np.asarray(list(xset.values()),dtype=int)
             y=np.asarray(list(yset.values()),dtype=int)
@@ -579,43 +729,57 @@ class EventRelationships:
             dset[conceptId]=(xset,yset)
         return dset
 
-    def Compile(self,events,dset,min_score,samples=None):
+    def Compile(self,dset,min_score,events=None,concepts=None,samples=None):
         used=set(dset.keys())
-        for _,event in events.iterrows():
-            conceptList = ast.literal_eval(event.concepts)
-            for id,score in conceptList:
-                if id in used:
-                    dset[id].append(1) if score>=min_score else dset[id].append(0)
-                    used.remove(id)
-                elif samples is not None and score>=min_score:
-                    dset[id]=[0 for _ in range(samples)]
-                    dset[id].append(1)
+        if events is not None:
+            for _,event in events.iterrows():
+                conceptList = ast.literal_eval(event.concepts)
+                for id,score in conceptList:
+                    if score>=min_score:
+                        if id in used:
+                            dset[id].append(1)
+                            used.remove(id)
+                        elif samples is not None:
+                            dset[id]=[0 for _ in range(samples)]
+                            dset[id].append(1)
+        else:
+            conceptList = ast.literal_eval(concepts)
+            for id, score in conceptList:
+                if score >= min_score:
+                    if id in used:
+                        dset[id].append(1)
+                        used.remove(id)
+                    elif samples is not None:
+                        dset[id] = [0 for _ in range(samples)]
+                        dset[id].append(1)
 
         for id in used:
             dset[id].append(0)
 
     # random forest prediction
-    def RandomForest(self,dset,conceptNames=None,conceptIds=None,from_file=False,n_estimators=10, criterion="gini", max_depth=None, min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0, max_features="auto", max_leaf_nodes=None, min_impurity_decrease=0.0, min_impurity_split=None, bootstrap=True, oob_score=False, n_jobs=1, random_state=None, verbose=0, warm_start=False, class_weight=None):
-        print("Training random forest")
+    def RandomForest(self, dset,conceptNames=None, keys=None,nar=True, from_file=False, n_estimators=10, criterion="gini", max_depth=None, min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0, max_features="auto", max_leaf_nodes=None, min_impurity_decrease=0.0, min_impurity_split=None, bootstrap=True, oob_score=False, n_jobs=1, random_state=None, verbose=0, warm_start=False, class_weight=None):
         from sklearn.ensemble import RandomForestClassifier
+        if nar:
+            print("Training random forest")
 
-        if conceptIds is None:
-            conceptIds = self.ConceptNameToId(conceptNames)
+        if keys is None:
+            keys = self.ConceptNameToId(conceptNames)
 
         clfs={}
-        for id in conceptIds:
-            print(id)
+        for id in keys:
+            if nar:
+                print(id)
             if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_x.txt"):
                 x = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_x.txt",delimiter=self.sep,skip_header=1,dtype=int)
             else:
-                x = np.asarray(list(dset[id][0].values()), dtype=int)
+                x = np.asarray(list(dset[id][0].values()), dtype=int).T
             if len(x.shape)<2:
                 clfs[id]=None
                 continue
             if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_y.txt"):
                 y = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_y.txt", delimiter=self.sep,skip_header=1, dtype=int)
             else:
-                y = np.asarray(list(dset[id][1].values()), dtype=int)
+                y = np.asarray(list(dset[id][1].values()), dtype=int).T
             if len(y.shape)<2:
                 clfs[id]=None
                 continue
@@ -666,8 +830,8 @@ class EventRelationships:
                         fol=cluster.loc[cluster.date>event.date]
                         #TODO
                         #if len(prev)>=min_events and len(fol)>=min_events:
-                        #    self.Compile(prev,OrderedDict(usedConcepts),f=x,min_score=min_score)
-                        #    self.Compile(fol,OrderedDict(usedConcepts),f=y,min_score=min_score)
+                        #    self.Compile(OrderedDict(usedConcepts),events=prev,f=x,min_score=min_score)
+                        #    self.Compile(events=fol,OrderedDict(usedConcepts),events=prev,f=y,min_score=min_score)
 
     def ConceptVocab(self,events,min_score):
         conceptVocab=OrderedDict()
@@ -727,19 +891,24 @@ class EventRelationships:
         for i in range(y_true.shape[0]):
             set_true = set(np.where(y_true[i])[0])
             set_pred = set(np.where(y_pred[i])[0])
-            #print('\nset_true: {0}'.format(set_true))
-            #print('set_pred: {0}'.format(s#t_pred))
+
             tmp_a = None
             if len(set_true) == 0 and len(set_pred) == 0:
                 tmp_a = 1
             else:
-                print("N Correctly predicted: "+str(len(set_true.intersection(set_pred))))
-                print("N Predicted: "+str(len(set_pred)))
-                print("N True: "+str(len(set_true)))
+                if verbose:
+                    print("N Predicted: "+str(len(set_pred)))
+                    print("N True: "+str(len(set_true)))
+                    print("N Correctly predicted: "+str(len(set_true.intersection(set_pred))))
                 tmp_a = len(set_true.intersection(set_pred)) / float(len(set_true.union(set_pred)))
-            #print('tmp_a: {0}'.format(tmp_a))
+
             acc_list.append(tmp_a)
             if verbose:
+                set_attr = set(np.where(list(train_x.T))[0])
+                ids = [[xset.keys()][i] for i in set_attr]
+                names = self.ConceptIdToName(ids)
+                print("Attributes: " + names)
+
                 ids = [cids_y[i] for i in set_pred]
                 names=self.ConceptIdToName(ids)
                 print("Predicted classes: "+names)
@@ -750,6 +919,8 @@ class EventRelationships:
 
 
         return np.mean(acc_list)
+
+
 
     ### Machine Learning ######################################################################################################################
 
@@ -786,6 +957,7 @@ class EventRelationships:
     # split dataset into train and test sets by date
     # date: "yyyy-mm-dd"
     def TrainTestSplit(self,date,out=True):
+        print("Splitting dataset to train and test sets by date: "+date)
         events = self.GetEvents()
         train = events.loc[events.date<date]
         test = events.loc[events.date>=date]
@@ -1005,77 +1177,29 @@ class EventRelationships:
     def NoZeroMean(self,d):
         return np.nanmean(d.values, axis=1)
 
-
-    def CrossValidate(self,date_start="2017-09-01",date_end="2017-09-30",print_rel=False,min_score=30,n_clusters=1000,date_wgt=2500,seed=1):
-        dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end)).tolist()
-        scores = defaultdict(list)
-        for date in dateRange:
-            date = date.strftime('%Y-%m-%d')
-            print(date)
-
-            train,test = self.TrainTestSplit(date,out=False)
-
-            trainMatrix,trainVocab=self.CsrMatrix(normalized=True,concept_wgt=100,include_date=True,date_wgt=date_wgt,events=train,min_events=5,date_max=date)
-            trainModel,trainLabels = self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=True,seed=seed)
-            train["cluster"]=trainLabels
-
-            testMatrix = self.CsrMatrix(normalized=True, concept_wgt=100, include_date=True, date_wgt=date_wgt, events=test,min_events=5)[0]
-            testModel, testLabels = self.KMeans(testMatrix, n_clusters, useMiniBatchKMeans=True,seed=seed)
-            test["cluster"]=testLabels
-
-            today=test.loc[test.date==date]
-
-            conceptIds=self.TopConcepts(today,min_score)
-            dset=self.DatasetFromClusters(events=train,conceptIds=conceptIds,min_events=2,out=True)
-            #dset=None
-            clfs=self.RandomForest(dset,conceptIds=conceptIds,from_file=True)
-
-            for conceptId in conceptIds:
-                if clfs[conceptId] is not None:
-                    print("Processing concept: "+str(conceptId))
-                    xset = OrderedDict({cid: [] for cid in list(dset[conceptId][0].keys())})
-                    yset = OrderedDict({cid: [] for cid in list(dset[conceptId][1].keys())})
-                    for _,event in today.iterrows():
-                        if HasConcept(event.concepts,conceptId):
-                            testCluster=test.loc[test.cluster==event.cluster]
-                            sampleCsr=self.CsrFromVocab(trainVocab,event,concept_wgt=100,date_wgt=date_wgt)
-                            sampleCluster= trainModel.predict(sampleCsr)
-                            trainCluster = train.loc[train.cluster==sampleCluster[0]]
-                            self.Compile(trainCluster,xset,min_score)
-                            self.Compile(testCluster,yset,min_score)
-
-                            #set_attr = set(np.where(list(xset.values)()[i])[0])
-                            #ids = [[xset.keys()][i] for i in set_pred]
-                            #names = self.ConceptIdToName(ids)
-                            #print("Attributes: " + names)
-                    train_x = np.asarray(list(xset.values()))
-                    test_y = np.asarray(list(yset.values()))
-
-                    train_y=clfs[conceptId].predict(train_x.T)
-                    score=self.HammingScore(test_y.T,train_y,verbose=True,cids_y=[yset.keys()])
-                    print("Hamming score for " + str(conceptId) + " is " + str(score))
-                    scores[conceptId].append(score) #todo
-
-    def CsrFromVocab(self,vocab,event,concept_wgt=100,date_wgt=5000):
+    def CsrFromVocab(self,vocab,events,concept_wgt=100,date_wgt=5000,include_date=False):
+        print("Making CSR Matrix from input vocab")
         indptr = [0]
         indices = []
         data = []
-        conceptsList = ast.literal_eval(event.concepts)  # list of tuples like (conceptId,score)
-        #build csr vectors
-        for id,score in conceptsList:
-            if id in vocab:
-                index = vocab[id]
+        for _,event in events.iterrows():
+            conceptsList = ast.literal_eval(event.concepts)
+            #build csr vectors
+            for id,score in conceptsList:
+                if id in vocab:
+                    index = vocab[id]
+                    indices.append(index)
+                    score = normalize(score,0,100)
+                    data.append(score*concept_wgt)
+
+            #include date dimension
+            if include_date:
+                index = vocab["date"]
                 indices.append(index)
-                score = normalize(score,0,100)
-                data.append(score*concept_wgt)
+                data.append(1*date_wgt)
+            indptr.append(len(indices))
 
-        #include date dimension
-        index = vocab["date"]
-        indices.append(index)
-        data.append(1*date_wgt)
-        indptr.append(len(indices))
-
-        return csr_matrix((data, indices, indptr), dtype=int,shape=(1,len(vocab)))
+        return csr_matrix((data, indices, indptr), dtype=int,shape=(len(events),len(vocab)))
 
     def TopConcepts(self,events,min_score):
         concepts=set()
