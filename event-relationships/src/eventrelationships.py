@@ -93,11 +93,15 @@ class EventRelationships:
         return selected["conceptId"].astype(int)
 
     def ConceptIdToName(self,conceptIds):
-        concepts=self.GetConcepts()
-        selected = pd.Series()
-        for id in conceptIds:
-            selected = selected.append(concepts.loc[concepts["conceptId"] == id], ignore_index=True)
-        return selected["title "].astype(str)
+        if len(conceptIds)>1:
+            concepts=self.GetConcepts()
+            selected = pd.Series()
+            for cid in conceptIds:
+                concept = concepts.loc[concepts["conceptId"] == str(cid)]
+                selected = selected.append(concept, ignore_index=True)
+            return selected.title.values
+        else:
+            return []
 
 
 
@@ -382,8 +386,9 @@ class EventRelationships:
         return matrix
 
     #compute csr matrix from data
-    def CsrMatrix(self,out=None,normalized=False,concept_wgt=1,include_date=False,date_wgt=1,date_max=None,min_events=5,events=None):
-        print("Making CSR matrix")
+    def CsrMatrix(self,out=None,normalized=False,concept_wgt=1,include_date=False,date_wgt=1,date_max=None,min_events=5,events=None,verbose=False):
+        if verbose:
+            print("Making CSR matrix")
         if events is None:
             events = self.GetEvents()
         eventsConcepts = events["concepts"]  # get just the event concepts
@@ -428,9 +433,9 @@ class EventRelationships:
         if out is not None:
             save_sparse_csr(out,matrix)
             #save_as_json(vocabulary,os.path.join(self.data_subdir, out))
-
-        print("n dimensions: "+str(len(vocabulary)))
-        print("n excluded: "+str(excluded))
+        if verbose:
+            print("n dimensions: "+str(len(vocabulary)))
+            print("n excluded: "+str(excluded))
         return (matrix,vocabulary)
 
 
@@ -438,13 +443,17 @@ class EventRelationships:
     ### Clustering Algorithms ######################################################################################################################
 
     # nmf clustering
-    def NMF(self,x,nClusters,init="nndsvd",seed=None,maxiter=100):
+    def NMF(self,x,nClusters,init="nndsvd",seed=None,maxiter=100,out=None):
         model = NMF(n_components=nClusters, init=init, random_state=seed, max_iter=maxiter)
-        W = model.fit_transform(x)
+        model.fit(x)
+        W = model.transform(x)
         labels=[]
         for sample in W:
             labels.append(np.argmax(sample))
         #H = model.components_
+
+        if out is not None:
+            save_model(model,out)
         return (model,labels)
 
     # dbscan clustering
@@ -453,8 +462,9 @@ class EventRelationships:
         return (db,db.labels_)
 
     #k-means clustering
-    def KMeans(self, x, n_clusters, seed=None, init="k-means++", max_iter=300, n_init=10, n_jobs=1,verbose=0, useMiniBatchKMeans=False,out=None):
-        print("Training K-Means")
+    def KMeans(self, x, n_clusters, nar=False,seed=None, init="k-means++", max_iter=300, n_init=10, n_jobs=1,verbose=0, useMiniBatchKMeans=False,out=None):
+        if nar:
+            print("Training K-Means")
         if useMiniBatchKMeans:
             kmeans = MiniBatchKMeans(
                 n_clusters=n_clusters,
@@ -532,6 +542,7 @@ class EventRelationships:
         return (model,model.fit_predict(x))
 
 
+
     ### Dimensionality Reduction ######################################################################################################################
 
     def TruncatedSVD(self,x,n_components = 2,algorithm = "randomized",n_iter = 5,seed=None,tol=0.0):
@@ -595,31 +606,33 @@ class EventRelationships:
                     print("Hamming score for " + str(conceptId) + " is " + str(score))
                     scores[conceptId].append(score) #todo
 
-    def CrossValidateByCluster(self,date_start="2017-09-01",date_end="2017-09-30",print_rel=False,min_score=50,n_clusters=1000,window_size=7,verbose=True):
+    def CrossValidateByCluster(self,date_start="2017-09-01",date_end="2017-09-10",print_rel=False,min_score=50,n_clusters=1000,window_size=2,verbose=False):
         dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end)).tolist()
         scores = defaultdict(list)
+        constantScores = defaultdict(list)
         for date in dateRange:
             date = date.strftime('%Y-%m-%d')
             print(date)
 
-            train,test = self.TrainTestSplit(date,out=False)
+            train,test = self.TrainTestSplit(date,out=False,verbose=verbose)
 
-            trainMatrix,trainVocab=self.CsrMatrix(events=train,min_events=5)
-            trainModel,trainLabels = self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=True)
+            trainMatrix,trainVocab=self.CsrMatrix(events=train,min_events=5,verbose=verbose)
+            trainModel,trainLabels = self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=True,nar=verbose)
             train["cluster"]=trainLabels
 
             today=test.loc[test.date==date]
 
-            todayCsr=self.CsrFromVocab(trainVocab,today)
+            todayCsr=self.CsrFromVocab(trainVocab,today,verbose=verbose)
             todayLabels= trainModel.predict(todayCsr)
             today["cluster"]=todayLabels
             todayClusters=set(todayLabels)
 
-            dset=self.DatasetByCluster(events=train,keys=todayClusters,out=True,window_size=window_size,min_score=min_score,verbose=verbose)
-            clfs=self.RandomForest(dset, keys=todayClusters, from_file=False)
+            dset=self.DatasetByCluster(events=train,keys=todayClusters,out=False,window_size=window_size,min_score=min_score,verbose=verbose)
+            clfs=self.RandomForest(dset, keys=todayClusters, from_file=False,nar=verbose)
+            constantClfs=self.MultiLabelMostFrequent(dset,keys=todayClusters,verbose=True,from_file=False)
 
             for todayCluster in todayClusters:
-                if clfs[todayCluster] is not None:
+                if clfs[todayCluster] is not None and constantClfs[todayCluster] is not None:
                     trainCluster=train.loc[train.cluster==todayCluster]
                     group=today.loc[today.cluster==todayCluster]
 
@@ -635,10 +648,19 @@ class EventRelationships:
                     test_y = np.asarray(list(yset.values()))
 
                     train_y=clfs[todayCluster].predict(train_x.T)
-                    score=self.HammingScore(test_y.T,train_y,verbose=verbose,cids_y=[yset.keys()])
-                    print("Hamming score for " + str(todayCluster) + " is " + str(score))
-                    scores[todayCluster].append(score) #todo
-            break
+                    constant_train_y=self.MLMFPredict(constantClfs[todayCluster],todayCluster,yset)
+                    score=self.HammingScore(test_y.T,train_y,verbose=verbose,xset=xset,yset=yset)
+                    constantScore = self.HammingScore(test_y.T,constant_train_y,verbose=verbose,xset=xset,yset=yset)
+                    if verbose:
+                        print("Hamming score for " + str(todayCluster) + " is " + str(score))
+                        print("Constant score for " + str(todayCluster) + " is " + str(constantScore))
+                    scores[todayCluster].append(score)
+                    constantScores[todayCluster].append(constantScore)
+
+        for key in scores.keys():
+            print("Mean Hamming Score for cluster "+str(key)+" is "+str(np.mean(scores[key])))
+            print("Mean constant score for cluster "+str(key)+" is "+str(np.mean(constantScores[key]))+self.nl)
+
 
     ### Multi-label prediction ######################################################################################################################
 
@@ -683,6 +705,7 @@ class EventRelationships:
                 endDate = (endDate + timedelta(days=window_size))
             x = np.asarray(list(xset.values()), dtype=int)
             y = np.asarray(list(yset.values()), dtype=int)
+
             if verbose:
                 print("n features: " + str(x.shape[0]))
                 print("n classes: " + str(y.shape[0]))
@@ -773,20 +796,57 @@ class EventRelationships:
                 x = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_x.txt",delimiter=self.sep,skip_header=1,dtype=int)
             else:
                 x = np.asarray(list(dset[id][0].values()), dtype=int).T
-            if len(x.shape)<2:
+            if x.shape[0]==0 or len(x.shape)<2:
                 clfs[id]=None
                 continue
             if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_y.txt"):
                 y = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_y.txt", delimiter=self.sep,skip_header=1, dtype=int)
             else:
                 y = np.asarray(list(dset[id][1].values()), dtype=int).T
-            if len(y.shape)<2:
+            if y.shape[0]==0 or len(y.shape)<2:
                 clfs[id]=None
                 continue
             model = RandomForestClassifier(n_estimators=n_estimators, criterion=criterion, max_depth=max_depth, min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf, min_weight_fraction_leaf=min_weight_fraction_leaf, max_features=max_features, max_leaf_nodes=max_leaf_nodes, min_impurity_decrease=min_impurity_decrease, min_impurity_split=min_impurity_split, bootstrap=bootstrap, oob_score=oob_score, n_jobs=n_jobs, random_state=random_state, verbose=verbose, warm_start=warm_start, class_weight=class_weight)
             model.fit(x,y)
             clfs[id]=model
         return clfs
+
+    def MultiLabelMostFrequent(self, dset, n_labels=10,keys=None,conceptNames=None,verbose=True,from_file=False):
+        if verbose:
+            print("Training most frequent classfier")
+
+        if keys is None:
+            keys = self.ConceptNameToId(conceptNames)
+
+        clfs={}
+        for id in keys:
+            if verbose:
+                print(id)
+
+            if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_y.txt"):
+                #TODO
+                y = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_y.txt", delimiter=self.sep,skip_header=1, dtype=int)
+            else:
+                y = dset[id][1]
+            if len(y.keys())==0 or len(y[list(y.keys())[0]])<2:
+                clfs[id]=None
+                continue
+
+            freq = sorted(y.items(), key=lambda x: sum(x[1]),reverse=True)[:n_labels]
+            model=[]
+            for cid,val in freq:
+                model.append(cid)
+            clfs[id]=model
+        return clfs
+
+    def MLMFPredict(self,model,key,yset):
+        concepts=list(yset.keys())
+        train_y=OrderedDict()
+        n_samples=len(yset[concepts[0]])
+        for cid in concepts:
+            train_y[cid]=[1 if cid in model else 0 for _ in range(n_samples)]
+
+        return np.asarray(list(train_y.values())).T
 
     # apriori association rule prediction
     def Apriori(self, support=0.01, minlen=1):
@@ -882,11 +942,13 @@ class EventRelationships:
 
     ### Validation metrics ######################################################################################################################
 
-    def HammingScore(self,y_true, y_pred,verbose=False,cids_y=None):
+    def HammingScore(self,y_true, y_pred,verbose=False,xset=None,yset=None):
         '''
         Compute the Hamming score (a.k.a. label-based accuracy) for the multi-label case
         https://stackoverflow.com/q/32239577/395857
         '''
+        if verbose:
+            print("Calculating Hamming Score / Jaccard Index")
         acc_list = []
         for i in range(y_true.shape[0]):
             set_true = set(np.where(y_true[i])[0])
@@ -904,18 +966,23 @@ class EventRelationships:
 
             acc_list.append(tmp_a)
             if verbose:
-                set_attr = set(np.where(list(train_x.T))[0])
-                ids = [[xset.keys()][i] for i in set_attr]
-                names = self.ConceptIdToName(ids)
-                print("Attributes: " + names)
+                train_x = np.asarray(list(xset.values()))
 
-                ids = [cids_y[i] for i in set_pred]
+                set_attr = set(np.where(train_x.T[i])[0])
+                ids = [list(xset.keys())[i] for i in set_attr]
+                names = self.ConceptIdToName(ids)
+                print("Attributes: ")
+                print(names)
+
+                ids = [list(yset.keys())[i] for i in set_pred]
                 names=self.ConceptIdToName(ids)
-                print("Predicted classes: "+names)
+                print("Predicted classes: ")
+                print(names)
 
-                ids = [cids_y[i] for i in set_true]
+                ids = [list(yset.keys())[i] for i in set_true]
                 names = self.ConceptIdToName(ids)
-                print("Actual classes: "+names)
+                print("Actual classes: ")
+                print(names)
 
 
         return np.mean(acc_list)
@@ -929,6 +996,7 @@ class EventRelationships:
         cs = dict.fromkeys(set(labels),0)
         for label in labels:
             cs[label]+=1
+        print(list(cs.values()))
         self.Plot(list(cs.values()))
 
     # compute top concepts for each cluster
@@ -956,8 +1024,9 @@ class EventRelationships:
 
     # split dataset into train and test sets by date
     # date: "yyyy-mm-dd"
-    def TrainTestSplit(self,date,out=True):
-        print("Splitting dataset to train and test sets by date: "+date)
+    def TrainTestSplit(self,date,out=True,verbose=False):
+        if verbose:
+            print("Splitting dataset to train and test sets by date: "+date)
         events = self.GetEvents()
         train = events.loc[events.date<date]
         test = events.loc[events.date>=date]
@@ -1004,11 +1073,9 @@ class EventRelationships:
             plt.show()
 
     # write all the clusters to a file in a human readable format
-    def ShowRelationships(self,labels,out):
-        clusters = self.GetClusters(labels)
-
+    def ShowRelationships(self,labels,out,events):
         with open(os.path.join(self.results_subdir,out)+".txt", "w", encoding=self.enc, newline=self.nl) as f:
-            for _,cluster in clusters.groupby(level=0):
+            for _,cluster in events.groupby("cluster"):
                 f.write("New cluster: "+self.nl)
                 for _,event in cluster.iterrows():
                     f.write(str(event["title"])+" ["+event["date"]+"] => ")
@@ -1177,8 +1244,9 @@ class EventRelationships:
     def NoZeroMean(self,d):
         return np.nanmean(d.values, axis=1)
 
-    def CsrFromVocab(self,vocab,events,concept_wgt=100,date_wgt=5000,include_date=False):
-        print("Making CSR Matrix from input vocab")
+    def CsrFromVocab(self,vocab,events,concept_wgt=100,date_wgt=5000,include_date=False,verbose=False):
+        if verbose:
+            print("Making CSR Matrix from input vocab")
         indptr = [0]
         indices = []
         data = []

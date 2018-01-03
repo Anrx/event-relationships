@@ -36,28 +36,36 @@ if __name__ == '__main__':
 
 
 ### clustering without silhuette optimization ######################################################################################################################
-    #er=EventRelationships("events_train","concepts","categories",connect=False)
-    #matrix =load_sparse_csr("csr_matrix_min5_date_wgt5000_train.npz")
+    er=EventRelationships("events_train","concepts","categories",connect=False)
+    #matrix,v=er.CsrMatrix(min_events=5,verbose=True,out="csr_matrix_min5_train")
+    matrix = load_sparse_csr("csr_matrix_min5_train")
 
     #model,labels = er.KMeans(matrix,1000,verbose=1,useMiniBatchKMeans=True,out="MiniBatchKMeans_1000_min2_date_wgt10000_train")
-
-    #model=load_model("KMeans_2000_date_wgt5000_min5_train",er.enc)
-
+    #model,labels=er.KMeans(matrix,1000,useMiniBatchKMeans=True,out="MiniBatchKMeans_1000_min5_train")
     #CustomKmeans(matrix,100)
     #model,labels,score=er.KMeans(matrix,100,verbose=1,useMiniBatchKMeans=False)
-    #model,labels=er.NMF(matrix,1000)
+    #model,labels=er.NMF(matrix,1000,out="NMF_1000_min5_train")
     #model,labels = er.DBSCAN(matrix,max_distance=50,min_samples=5,metric="cosine",leaf_size=100)
     #model,labels=er.Birch(matrix,copy=False)
     #model,labels = er.MeanShift(matrix.toarray())
     #model,labels = er.SpectralClustering(matrix)
-    #er.CountClusterSize(labels)
     #model,labels = er.AffinityPropagation(matrix)
     #model,labels = er.AgglomerativeClustering(matrix.toarray(),n_clusters=1000,affinity="l1",linkage="average")
     #model = er.AgglomerativeClustering(matrix,imp="scipy")
-    #silhuette(matrix,labels)
-    #er.ShowRelationships(labels, "MiniBatchKMeans_1000_min2_date_wgt10000_train")
 
-    #find specific clusters
+    #model=load_model("NMF_1000_min5_train",er.enc)
+
+    #W=model.transform(matrix)
+    #labels=[]
+    #for sample in W:
+    #    labels.append(np.argmax(sample))
+    #er.CountClusterSize(labels)
+    #events=er.GetEvents()
+    #events["cluster"]=labels
+    #er.ShowRelationships(labels, "NMF_1000_min5_train",events)
+
+
+#find specific clusters
     #er=EventRelationships("events","concepts","categories",connect=True)
     #model = load_model("KMeans-100-date-wgt5000",er.enc)
     #er.FindEventRelationships(model.labels_,["war","immigration"])
@@ -104,11 +112,6 @@ if __name__ == '__main__':
     #er.ShowClusterRelationships(model.labels_,groupModel.labels_,"Hierarichal_200_clusters")
 
 ### random forest prediction ######################################################################################################################
-    #er = EventRelationships("events_train", "concepts", "categories", connect=True)
-    #model = load_model("MiniBatchKMeans_1000_min2_date_wgt5000_train", er.enc)
-    #er.RandomForestFromClusters(model.labels_,["war","donald trump"],min_events=0)
-    #er.RandomForest(["war","donald trump"])
-
     er = EventRelationships("events", "concepts", "categories", connect=False)
     er.CrossValidateByCluster()
 
@@ -116,4 +119,16 @@ if __name__ == '__main__':
 ### testing ######################################################################################################################
     #er = EventRelationships("events", "concepts", "categories", connect=False)
     #er.TrainTestSplit("2017-09-01")
+
+    #er = EventRelationships("events_train", "concepts", "categories", connect=False)
+    #events = er.GetEvents()
+    #model = load_model("MiniBatchKMeans_1000_min5_train", er.enc)
+    #events["cluster"] = model.labels_
+    #train = events.loc[events.cluster == 538]
+    #trainMatrix, trainVocab = er.CsrMatrix(events=train, min_events=5, verbose=True, out="csr_matrix_min5_train_cluster538")
+    #trainModel, trainLabels = er.KMeans(trainMatrix, 1000, useMiniBatchKMeans=True, nar=True,
+    #                                    out="MiniBatchKMeans_1000_min5_train_cluster538")
+    #train["cluster"] = trainLabels
+    #er.CountClusterSize(model.labels_)
+    #er.ShowRelationships(model.labels_, "MiniBatchKMeans_1000_min5_train_cluster538", train)
 

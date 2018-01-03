@@ -15,7 +15,7 @@ def save_sparse_csr(filename, x):
 
 #loads a spare csr matrix
 def load_sparse_csr(filename):
-    csr = numpy.load(filename)
+    csr = numpy.load(filename+".npz")
     return csr_matrix((csr['data'], csr['indices'], csr['indptr']),
                       shape=csr['shape'])
 
