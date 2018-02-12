@@ -7,7 +7,7 @@ import os.path
 import pickle
 import json
 import ast
-
+from datetime import date,timedelta
 #saves a spare csr matrix as .npz
 def save_sparse_csr(filename, x):
     numpy.savez(filename, data=x.data, indices=x.indices,
@@ -65,6 +65,10 @@ def str_to_date(d):
     d=d.split("-")
     return date(int(d[0]),int(d[1]),int(d[2]))
 
+#returns a string object from a date like YYYY-MM-DD
+def date_to_str(d):
+    return d.strftime('%Y-%m-%d')
+
 def save_as_json(obj,out):
     with open(out + ".json", "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2)
@@ -80,3 +84,16 @@ def HasConcept(concepts,cid):
         if id==cid:
             return True
     return False
+
+def AverageDate(cluster):
+    dates = cluster.date
+    dateMin = str_to_date(dates.min())
+    dateMax = str_to_date(dates.max())
+    dateDelta = (dateMax - dateMin).days
+    avgDate = dateMin + timedelta(days=dateDelta / 2)
+    cluster["avgDate"]=avgDate
+    return cluster
+
+def GroupBySorter(cluster,sortby):
+    cluster.sort_values(sortby, inplace=True)
+    return cluster

@@ -35,6 +35,7 @@ import os.path
 import matplotlib.pyplot as plt
 
 class EventRelationships:
+    tab = "\t"
     nl = "\n"
     sep = ";"
     enc = "utf-8"
@@ -103,21 +104,51 @@ class EventRelationships:
         else:
             return []
 
+    def GetConceptIdToNameLookupDict(self):
+        concepts=self.GetConcepts()
+        ids = concepts.conceptId.values
+        names = concepts.title.values
+        return {id:name for id,name in zip(ids,names)}
+
 
 
     ### Get Data #########################################################################################################################
 
-    def GetEvents(self):
-        return pd.read_csv(os.path.join(self.data_subdir, self.events_filename) + ".csv", sep=self.sep, encoding=self.enc, dtype=str) # read events into dataframe
+    def GetEvents(self,index_col=None):
+        return pd.read_csv(os.path.join(self.data_subdir, self.events_filename) + ".csv", sep=self.sep, encoding=self.enc, dtype=str,index_col=index_col) # read events into dataframe
 
-    def GetConcepts(self):
-        return pd.read_csv(os.path.join(self.data_subdir, self.concepts_filename) + ".csv", sep=self.sep, encoding=self.enc, dtype=str) # read concepts into dataframe
+    def GetConcepts(self,index_col=None):
+        return pd.read_csv(os.path.join(self.data_subdir, self.concepts_filename) + ".csv", sep=self.sep, encoding=self.enc, dtype=str,index_col=index_col) # read concepts into dataframe
 
-    def GetCategories(self):
-        return pd.read_csv(os.path.join(self.data_subdir, self.categories_filename) + ".csv", sep=self.sep, encoding=self.enc, dtype=str)  # read categories into dataframe
+    def GetCategories(self,index_col=None):
+        return pd.read_csv(os.path.join(self.data_subdir, self.categories_filename) + ".csv", sep=self.sep, encoding=self.enc, dtype=str,index_col=index_col)  # read categories into dataframe
 
     def GetHeatmap(self):
         return pd.read_csv("ConceptHeatmap.csv", sep=self.sep, encoding=self.enc, index_col=0)  # read frequencies into dataframe
+
+    def GetConceptCount(self):
+        with open(os.path.join(self.data_subdir, "conceptCount") + ".json", "r", encoding=self.enc) as f:
+            conceptCount = json.load(f)
+        return conceptCount
+
+    def GetClusters(self,labels,events=None,groupLabels=None,sorted=True):
+        if events is None:
+            events=self.GetEvents()
+        events["cluster"]=labels
+
+        if groupLabels is not None:
+            groupClusterLabels=[]
+            for lab in labels:
+                groupClusterLabels.append(groupLabels[lab])
+            events["groupCluster"]=groupClusterLabels
+
+        if sorted:
+            events=events.groupby("cluster").apply(GroupBySorter,("date"))
+            if groupLabels is not None:
+                events=events.groupby("cluster").apply(AverageDate)
+                events=events.groupby("groupCluster").apply(GroupBySorter,("avgDate"))
+
+        return events
 
 
 
@@ -462,14 +493,15 @@ class EventRelationships:
         return (db,db.labels_)
 
     #k-means clustering
-    def KMeans(self, x, n_clusters, nar=False,seed=None, init="k-means++", max_iter=300, n_init=10, n_jobs=1,verbose=0, useMiniBatchKMeans=False,out=None):
+    def KMeans(self, x, n_clusters, nar=False,seed=None, init="k-means++", max_iter=300, n_init=10, n_jobs=1,verbose=0, useMiniBatchKMeans=False,out=None,dim_red=False):
         if nar:
             print("Training K-Means")
         if useMiniBatchKMeans:
             kmeans = MiniBatchKMeans(
                 n_clusters=n_clusters,
                 random_state=seed,
-                verbose=verbose)
+                verbose=verbose,
+                init_size=3*n_clusters) #to shut up the runtime warning
         else:
             kmeans = KMeans(
                 n_clusters=n_clusters,
@@ -495,7 +527,8 @@ class EventRelationships:
         return (affinity, affinity.labels_)
 
     # agglomerative (hierarichal) clustering
-    def AgglomerativeClustering(self,x,n_clusters=2,affinity="euclidean",caching_dir=None,connectivity=None,full_tree="auto", method="ward",imp="sklearn"):
+    def AgglomerativeClustering(self,x,n_clusters=2,affinity="euclidean",caching_dir=None,connectivity=None,full_tree="auto", method="ward",imp="sklearn",out=None):
+        print("AgglomerativeClustering")
         if imp.lower()=="scipy":
             Z = linkage(x.toarray(),method=method,metric=affinity)
             #c, coph_dists = cophenet(Z, pdist(x))
@@ -510,7 +543,11 @@ class EventRelationships:
                 connectivity=connectivity,
                 compute_full_tree=full_tree,
                 linkage=method)
-            model.fit(x)
+            model.fit(x.toarray())
+
+            if out is not None:
+                save_model(model,out)
+
             return (model,model.labels_)
 
     # birch clustering
@@ -541,9 +578,19 @@ class EventRelationships:
 
         return (model,model.fit_predict(x))
 
+    def Clustering2KNN(self,labels,csrMatrix,out=None,n_neighbors=5, weights="uniform", algorithm="auto", leaf_size=30, p=2, metric="minkowski", metric_params=None, n_jobs=1,verbose=False):
+        print("Clustering2KNN")
+        from sklearn.neighbors import KNeighborsClassifier
+        model = KNeighborsClassifier(n_neighbors=n_neighbors, weights=weights, algorithm=algorithm, leaf_size=leaf_size, p=p, metric=metric, metric_params=metric_params, n_jobs=n_jobs)
+        model.fit(csrMatrix, labels)
+
+        if out is not None:
+            save_model(model,out)
+
+        return model
 
 
-    ### Dimensionality Reduction ######################################################################################################################
+        ### Dimensionality Reduction ######################################################################################################################
 
     def TruncatedSVD(self,x,n_components = 2,algorithm = "randomized",n_iter = 5,seed=None,tol=0.0):
         svd = TruncatedSVD(n_components=n_components,algorithm=algorithm, n_iter=n_iter, random_state=42,tol=tol)
@@ -552,7 +599,24 @@ class EventRelationships:
         print(svd.explained_variance_ratio_.sum())
         print(svd.singular_values_)
 
+    def PCA(self,x,n_components=None, copy=True, whiten=False, svd_solver="auto", tol=0.0, iterated_power="auto", random_state=None,verbose=False):
+        print("pca")
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=n_components, copy=copy, whiten=whiten, svd_solver=svd_solver, tol=tol, iterated_power=iterated_power, random_state=random_state)
+        fitted=pca.fit_transform(x)
+        if verbose:
+            print(pca.explained_variance_ratio_)
+            print(pca.singular_values_)
+        return fitted,pca
 
+    def ClusterByTimeWindow(self,events=None,window_size=14):
+        if events is None:
+            events=self.GetEvents()
+        dates = events.date
+        dateMin = str_to_date(dates.min())
+        dateMax = str_to_date(dates.max())
+        dateRange = pd.date_range(str_to_date(dateMin), str_to_date(dateMax)).tolist()
+        pass
 
     ### Cross validation ######################################################################################################################
 
@@ -606,89 +670,158 @@ class EventRelationships:
                     print("Hamming score for " + str(conceptId) + " is " + str(score))
                     scores[conceptId].append(score) #todo
 
-    def CrossValidateByCluster(self,date_start="2017-09-01",date_end="2017-09-10",print_rel=False,min_score=50,n_clusters=1000,window_size=2,verbose=False):
+    def CrossValidateByCluster(self,date_start="2017-09-04",date_end="2017-09-18",print_rel=False,min_score=10,n_clusters=2000,window_size=14,verbose=True,separate=False,min_events=100,dim_red=False,low_effort=True,exclude_entities=True,knn_cluster_assignment=False,caching=False):
         dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end)).tolist()
-        scores = defaultdict(list)
-        constantScores = defaultdict(list)
+        if separate:
+            scores = defaultdict(list)
+            constantScores = defaultdict(list)
+        else:
+            scores=[]
+            constantScores=[]
         for date in dateRange:
+
+            #split dset by date
             date = date.strftime('%Y-%m-%d')
             print(date)
-
             train,test = self.TrainTestSplit(date,out=False,verbose=verbose)
 
-            trainMatrix,trainVocab=self.CsrMatrix(events=train,min_events=5,verbose=verbose)
-            trainModel,trainLabels = self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=True,nar=verbose)
+            #create matrix and train clustering
+            #trainMatrix,trainVocab=self.CsrMatrix(events=train,min_events=min_events,verbose=verbose)
+            trainMatrix, trainVocab = self.CsrMatrix(events=train,min_events=min_events,date_wgt=100,concept_wgt=100,normalized=True,include_date=True,verbose=verbose)
+            if caching:
+                trainModel=load_model("trainModelMiniKMeans",enc=self.enc)
+                trainLabels=trainModel.labels_
+            else:
+                trainModel,trainLabels= self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=True,nar=verbose,seed=1,verbose=False,out="trainModelMiniKMeans")
+                #trainModel,trainLabels = self.AgglomerativeClustering(trainMatrix,n_clusters=n_clusters)
             train["cluster"]=trainLabels
 
-            today=test.loc[test.date==date]
+            #performance info
+            #silhuette(trainMatrix,trainLabels)
+            self.CountClusterSize(trainLabels,plot=False)
 
+            #assign cluster to today's events
+            today=test.loc[test.date==date]
             todayCsr=self.CsrFromVocab(trainVocab,today,verbose=verbose)
-            todayLabels= trainModel.predict(todayCsr)
-            today["cluster"]=todayLabels
+            if knn_cluster_assignment:
+                knnModel = self.Clustering2KNN(trainLabels, trainMatrix)
+                todayLabels=knnModel.predict(todayCsr)
+            else:
+                todayLabels= trainModel.predict(todayCsr)
+            today.loc[:,"cluster"]=todayLabels
             todayClusters=set(todayLabels)
 
-            dset=self.DatasetByCluster(events=train,keys=todayClusters,out=False,window_size=window_size,min_score=min_score,verbose=verbose)
-            clfs=self.RandomForest(dset, keys=todayClusters, from_file=False,nar=verbose)
-            constantClfs=self.MultiLabelMostFrequent(dset,keys=todayClusters,verbose=True,from_file=False)
+            keys=None
+            if separate:
+                keys=todayClusters
+            if caching:
+                dset=load_model("dset",self.enc)
+            else:
+                dset = self.DatasetByCluster(events=train, keys=keys, out=True, window_size=window_size,
+                                             min_score=min_score, verbose=verbose, separate=separate,
+                                             min_events=min_events, exclude_entities=exclude_entities)
+            if dim_red:
+                clfs,pcaModel=self.RandomForest(dset, keys=todayClusters, from_file=False,nar=verbose,separate=separate,random_state=1,dim_red=dim_red)
+            else:
+                clfs=self.RandomForest(dset, keys=todayClusters, from_file=False,nar=verbose,separate=separate,random_state=1,dim_red=dim_red)
+            constantClfs=self.MultiLabelMostFrequent(train,keys=todayClusters,verbose=verbose,from_file=False,min_score=min_score,separate=separate,n_labels=10,filter=list(dset[1].keys()))
 
+            if not separate:
+                xset = OrderedDict({cid: [] for cid in list(dset[0].keys())})
+                yset = OrderedDict({cid: [] for cid in list(dset[1].keys())})
             for todayCluster in todayClusters:
-                if clfs[todayCluster] is not None and constantClfs[todayCluster] is not None:
+                if not separate or clfs[todayCluster] is not None and constantClfs[todayCluster] is not None:
                     trainCluster=train.loc[train.cluster==todayCluster]
                     group=today.loc[today.cluster==todayCluster]
-
-                    xset = OrderedDict({cid: [] for cid in list(dset[todayCluster][0].keys())})
-                    yset = OrderedDict({cid: [] for cid in list(dset[todayCluster][1].keys())})
+                    if separate:
+                        xset = OrderedDict({cid: [] for cid in list(dset[todayCluster][0].keys())})
+                        yset = OrderedDict({cid: [] for cid in list(dset[todayCluster][1].keys())})
 
                     startDate = (str_to_date(date) - timedelta(days=window_size)).strftime('%Y-%m-%d')
                     cond = np.logical_and(trainCluster.date>=startDate, trainCluster.date<date)
-                    self.Compile(xset, min_score,events=trainCluster.loc[cond])
-                    self.Compile(yset, min_score,events=group)
+                    self.Compile(xset, min_score,events=trainCluster.loc[cond],exclude_entities=False)
+                    self.Compile(yset, min_score,events=group,exclude_entities=False)
 
-                    train_x = np.asarray(list(xset.values()))
-                    test_y = np.asarray(list(yset.values()))
+                    if separate:
+                        train_x = np.asarray(list(xset.values()))
+                        test_y = np.asarray(list(yset.values()))
 
-                    train_y=clfs[todayCluster].predict(train_x.T)
-                    constant_train_y=self.MLMFPredict(constantClfs[todayCluster],todayCluster,yset)
-                    score=self.HammingScore(test_y.T,train_y,verbose=verbose,xset=xset,yset=yset)
-                    constantScore = self.HammingScore(test_y.T,constant_train_y,verbose=verbose,xset=xset,yset=yset)
-                    if verbose:
-                        print("Hamming score for " + str(todayCluster) + " is " + str(score))
-                        print("Constant score for " + str(todayCluster) + " is " + str(constantScore))
-                    scores[todayCluster].append(score)
-                    constantScores[todayCluster].append(constantScore)
+                        train_y=clfs[todayCluster].predict(train_x.T)
+                        constant_train_y=self.MLMFPredict(constantClfs[todayCluster],yset)
+                        score=self.HammingScore(test_y.T,train_y,verbose=verbose,xset=xset,yset=yset,separate=separate)
+                        constantScore = self.HammingScore(test_y.T,constant_train_y,verbose=False,xset=xset,yset=yset,separate=separate)
+                        if verbose:
+                            print("Hamming score for " + str(todayCluster) + " is " + str(score))
+                            print("Constant score for " + str(todayCluster) + " is " + str(constantScore))
+                        scores[todayCluster].append(score)
+                        constantScores[todayCluster].append(constantScore)
 
-        for key in scores.keys():
-            print("Mean Hamming Score for cluster "+str(key)+" is "+str(np.mean(scores[key])))
-            print("Mean constant score for cluster "+str(key)+" is "+str(np.mean(constantScores[key]))+self.nl)
+            if not separate:
+                train_x = np.asarray(list(xset.values()))
+                test_y = np.asarray(list(yset.values()))
+
+                if dim_red:
+                    train_x=pcaModel.transform(train_x.T)
+                    train_y = clfs.predict(train_x)
+                else:
+                    train_y = clfs.predict(train_x.T)
+                constant_train_y = self.MLMFPredict(constantClfs, yset)
+                score = self.HammingScore(test_y.T, train_y, verbose=verbose, xset=xset, yset=yset,separate=separate)
+                constantScore = self.HammingScore(test_y.T, constant_train_y, verbose=verbose, xset=xset, yset=yset,separate=separate)
+                if verbose:
+                    print("Hamming score for " + date + " is " + str(score))
+                    print("Constant score for " + date + " is " + str(constantScore))
+                scores.append(score)
+                constantScores.append(constantScore)
+            break
+        if separate:
+            for key in scores.keys():
+                print("Mean Hamming Score for cluster "+str(key)+" x"+str(len(scores[key]))+" is "+str(np.mean(scores[key])))
+                print("Mean constant score for cluster "+str(key)+" is "+str(np.mean(constantScores[key]))+self.nl)
+        else:
+            print("Mean Hamming Score: " +str(np.mean(scores)))
+            print("Mean constant score: "+ str(np.mean(constantScores)) + self.nl)
 
 
     ### Multi-label prediction ######################################################################################################################
 
-    def DatasetByCluster(self,labels=None,events=None,keys=None,min_events=1,min_score=50,out=False,window_size=7,verbose=True):
+    def DatasetByCluster(self,labels=None,events=None,keys=None,min_events=1,min_score=50,out=False,window_size=7,verbose=True,separate=True,sliding=True,exclude_entities=False):
         if verbose:
             print("Making dataset")
-
+        if min_events>1:
+            conceptCount = self.GetConceptCount()
+        else:
+            conceptCount=None
         if events is None:
             events=self.GetEvents()
             events["cluster"]=labels
         if keys is None:
             keys=set(events.cluster.values)
-
-        dset={}
+        if exclude_entities:
+            concepts=self.GetConcepts(index_col=0)
+        else:
+            concepts=None
+        if separate:
+            dset = {}
+        else:
+            xset = OrderedDict()
+            yset = OrderedDict()
+            samples = 0
         for key in keys:
-            if verbose:
+            if verbose and separate:
                 print(str(key))
-            cluster = events.loc[events.cluster==key]
-            xset=OrderedDict()
-            yset=OrderedDict()
+            if separate:
+                xset=OrderedDict()
+                yset=OrderedDict()
+                samples = 0
 
+            cluster = events.loc[events.cluster==key]
             dateMin = str_to_date(cluster.date.min())
             dateMax = str_to_date(cluster.date.max())
-            startDate=dateMin
+            startDate = dateMin
             endDate = (dateMin + timedelta(days=window_size))
             dates = pd.to_datetime(cluster.date)
 
-            samples=0
             cluster.sort_values("date", inplace=True)
 
             while(endDate<=dateMax):
@@ -697,24 +830,40 @@ class EventRelationships:
                 yCond = dates == endDate
                 yWindow = cluster.loc[yCond]
 
-                self.Compile(xset, min_score, samples=samples, events=xWindow)
-                self.Compile(yset, min_score, samples=samples, events=yWindow)
+                self.Compile(xset, min_score, samples=samples, events=xWindow,min_events=min_events,conceptCount=conceptCount,concept_info=concepts,exclude_entities=exclude_entities)
+                self.Compile(yset, min_score, samples=samples, events=yWindow,min_events=min_events,conceptCount=conceptCount,concept_info=concepts,exclude_entities=exclude_entities)
 
                 samples+=1
-                startDate = endDate
-                endDate = (endDate + timedelta(days=window_size))
+                if sliding:
+                    startDate = (startDate + timedelta(days=1))
+                    endDate = (endDate + timedelta(days=1))
+                else:
+                    startDate = endDate
+                    endDate = (endDate + timedelta(days=window_size))
+            if separate:
+                x = np.asarray(list(xset.values()), dtype=int)
+                y = np.asarray(list(yset.values()), dtype=int)
+                if verbose:
+                    print("n features: " + str(x.shape[0]))
+                    print("n classes: " + str(y.shape[0]))
+                    print("n samples: " + str(x.shape[1]) if len(x.shape)>1 else 1)
+                if out and x.size > 0 and y.size > 0:
+                    np.savetxt(os.path.join(self.data_subdir, str(key)) + "_x.txt", x.T, delimiter=self.sep, header=self.sep.join(map(str, list(xset.keys()))), fmt="%d")
+                    np.savetxt(os.path.join(self.data_subdir, str(key)) + "_y.txt", y.T, delimiter=self.sep, header=self.sep.join(map(str, list(yset.keys()))), fmt="%d")
+                dset[key] = (xset, yset)
+        if not separate:
             x = np.asarray(list(xset.values()), dtype=int)
             y = np.asarray(list(yset.values()), dtype=int)
-
             if verbose:
                 print("n features: " + str(x.shape[0]))
                 print("n classes: " + str(y.shape[0]))
-                print("n samples: " + str(x.shape[1]) if len(x.shape)>1 else 1)
+                print("n samples: " + str(x.shape[1]) if len(x.shape) > 1 else 1)
             if out and x.size > 0 and y.size > 0:
-                np.savetxt(os.path.join(self.data_subdir, str(key)) + "_x.txt", x.T, delimiter=self.sep, header=self.sep.join(map(str, list(xset.keys()))), fmt="%d")
-                np.savetxt(os.path.join(self.data_subdir, str(key)) + "_y.txt", y.T, delimiter=self.sep, header=self.sep.join(map(str, list(yset.keys()))), fmt="%d")
-            dset[key] = (xset, yset)
-        return dset
+                np.savetxt(os.path.join(self.data_subdir,"_x") + ".txt", x.T, delimiter=self.sep,header=self.sep.join(map(str, list(xset.keys()))), fmt="%d")
+                np.savetxt(os.path.join(self.data_subdir,"_y") + ".txt", y.T, delimiter=self.sep,header=self.sep.join(map(str, list(yset.keys()))), fmt="%d")
+            return xset,yset
+        else:
+            return dset
 
     # compile dataset for prediction
     def DatasetByConcept(self,labels=None,events=None,conceptNames=None,conceptIds=None,min_events=10,min_score=50,out=False):
@@ -752,94 +901,135 @@ class EventRelationships:
             dset[conceptId]=(xset,yset)
         return dset
 
-    def Compile(self,dset,min_score,events=None,concepts=None,samples=None):
+    def Compile(self,dset,min_score,events=None,concepts=None,samples=None,min_events=1,conceptCount=None,concept_info=None,exclude_entities=True):
+        if exclude_entities:
+            excluded_types=["loc","person","org"]
         used=set(dset.keys())
+
+        excluded=0
         if events is not None:
             for _,event in events.iterrows():
                 conceptList = ast.literal_eval(event.concepts)
+                included=False
                 for id,score in conceptList:
-                    if score>=min_score:
-                        if id in used:
-                            dset[id].append(1)
-                            used.remove(id)
-                        elif samples is not None:
-                            dset[id]=[0 for _ in range(samples)]
-                            dset[id].append(1)
+                    if score >= min_score:
+                        if (not exclude_entities or concept_info.loc[id,:].type not in excluded_types) and (min_events<2 or conceptCount[str(id)][1]>=min_events):
+                            if id in used:
+                                dset[id].append(1)
+                                used.remove(id)
+                                included=True
+                            elif samples is not None:
+                                dset[id]=[0 for _ in range(samples)]
+                                dset[id].append(1)
+                                included = True
+                    else:
+                        break
+                if not included:
+                    excluded+=1
         else:
+            included=False
             conceptList = ast.literal_eval(concepts)
             for id, score in conceptList:
                 if score >= min_score:
-                    if id in used:
-                        dset[id].append(1)
-                        used.remove(id)
-                    elif samples is not None:
-                        dset[id] = [0 for _ in range(samples)]
-                        dset[id].append(1)
+                    if (not exclude_entities or concept_info.loc[id,:].type not in excluded_types) and (min_events < 2 or conceptCount[str(id)][1] >= min_events):
+                        if id in used:
+                            dset[id].append(1)
+                            used.remove(id)
+                            included = True
+                        elif samples is not None:
+                            dset[id] = [0 for _ in range(samples)]
+                            dset[id].append(1)
+                            included = True
+                else:
+                    break
+            if not included:
+                excluded+=1
 
         for id in used:
             dset[id].append(0)
 
+        #print("n excluded: "+str(excluded))
+
     # random forest prediction
-    def RandomForest(self, dset,conceptNames=None, keys=None,nar=True, from_file=False, n_estimators=10, criterion="gini", max_depth=None, min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0, max_features="auto", max_leaf_nodes=None, min_impurity_decrease=0.0, min_impurity_split=None, bootstrap=True, oob_score=False, n_jobs=1, random_state=None, verbose=0, warm_start=False, class_weight=None):
+    def RandomForest(self, dset,separate=True,conceptNames=None, keys=None,nar=True, from_file=False, n_estimators=10, criterion="gini", max_depth=None, min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0, max_features="auto", max_leaf_nodes=None, min_impurity_decrease=0.0, min_impurity_split=None, bootstrap=True, oob_score=False, n_jobs=1, random_state=None, verbose=0, warm_start=False, class_weight=None,dim_red=False,dim_red_model=None):
         from sklearn.ensemble import RandomForestClassifier
         if nar:
             print("Training random forest")
 
-        if keys is None:
-            keys = self.ConceptNameToId(conceptNames)
+        if separate:
+            if keys is None:
+                keys = self.ConceptNameToId(conceptNames)
+            clfs={}
+            for id in keys:
+                if nar:
+                    print(id)
+                if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_x.txt"):
+                    x = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_x.txt",delimiter=self.sep,skip_header=1,dtype=int)
+                else:
+                    x = np.asarray(list(dset[id][0].values()), dtype=int).T
+                if x.shape[0]==0 or len(x.shape)<2:
+                    clfs[id]=None
+                    continue
+                if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_y.txt"):
+                    y = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_y.txt", delimiter=self.sep,skip_header=1, dtype=int)
+                else:
+                    y = np.asarray(list(dset[id][1].values()), dtype=int).T
+                if y.shape[0]==0 or len(y.shape)<2:
+                    clfs[id]=None
+                    continue
+                model = RandomForestClassifier(n_estimators=n_estimators, criterion=criterion, max_depth=max_depth, min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf, min_weight_fraction_leaf=min_weight_fraction_leaf, max_features=max_features, max_leaf_nodes=max_leaf_nodes, min_impurity_decrease=min_impurity_decrease, min_impurity_split=min_impurity_split, bootstrap=bootstrap, oob_score=oob_score, n_jobs=n_jobs, random_state=random_state, verbose=verbose, warm_start=warm_start, class_weight=class_weight)
 
-        clfs={}
-        for id in keys:
-            if nar:
-                print(id)
-            if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_x.txt"):
-                x = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_x.txt",delimiter=self.sep,skip_header=1,dtype=int)
+                model.fit(x,y)
+                clfs[id]=model
+            return clfs
+        else:
+            if from_file and file_exists(os.path.join(self.data_subdir, "_x") + ".txt"):
+                x = np.genfromtxt(os.path.join(self.data_subdir, "_x") + ".txt", delimiter=self.sep, skip_header=1,dtype=int)
             else:
-                x = np.asarray(list(dset[id][0].values()), dtype=int).T
-            if x.shape[0]==0 or len(x.shape)<2:
-                clfs[id]=None
-                continue
-            if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_y.txt"):
-                y = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_y.txt", delimiter=self.sep,skip_header=1, dtype=int)
+                x = np.asarray(list(dset[0].values()), dtype=int).T
+            if from_file and file_exists(os.path.join(self.data_subdir, "_y") + ".txt"):
+                y = np.genfromtxt(os.path.join(self.data_subdir, "_y") + ".txt", delimiter=self.sep, skip_header=1,dtype=int)
             else:
-                y = np.asarray(list(dset[id][1].values()), dtype=int).T
-            if y.shape[0]==0 or len(y.shape)<2:
-                clfs[id]=None
-                continue
-            model = RandomForestClassifier(n_estimators=n_estimators, criterion=criterion, max_depth=max_depth, min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf, min_weight_fraction_leaf=min_weight_fraction_leaf, max_features=max_features, max_leaf_nodes=max_leaf_nodes, min_impurity_decrease=min_impurity_decrease, min_impurity_split=min_impurity_split, bootstrap=bootstrap, oob_score=oob_score, n_jobs=n_jobs, random_state=random_state, verbose=verbose, warm_start=warm_start, class_weight=class_weight)
-            model.fit(x,y)
-            clfs[id]=model
-        return clfs
-
-    def MultiLabelMostFrequent(self, dset, n_labels=10,keys=None,conceptNames=None,verbose=True,from_file=False):
+                y = np.asarray(list(dset[1].values()), dtype=int).T
+            model = RandomForestClassifier(n_estimators=n_estimators, criterion=criterion, max_depth=max_depth,
+                                           min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf,
+                                           min_weight_fraction_leaf=min_weight_fraction_leaf, max_features=max_features,
+                                           max_leaf_nodes=max_leaf_nodes, min_impurity_decrease=min_impurity_decrease,
+                                           min_impurity_split=min_impurity_split, bootstrap=bootstrap,
+                                           oob_score=oob_score, n_jobs=n_jobs, random_state=random_state,
+                                           verbose=verbose, warm_start=warm_start, class_weight=class_weight)
+            if dim_red:
+                if dim_red_model is None:
+                    reduced,pcaModel = self.PCA(x,n_components=100)
+                else:
+                    reduced = dim_red_model.transform(x)
+                model.fit(reduced, y)
+                return model,pcaModel
+            else:
+                model.fit(x, y)
+                return model
+    def MultiLabelMostFrequent(self, events, n_labels=10,keys=None,conceptNames=None,verbose=True,from_file=False,min_score=50,separate=True,filter=None):
         if verbose:
             print("Training most frequent classfier")
+        if separate:
+            if keys is None:
+                keys = self.ConceptNameToId(conceptNames)
+            clfs={}
+            for id in keys:
+                cluster=events.loc[events.cluster==id]
+                if verbose:
+                    print(id)
 
-        if keys is None:
-            keys = self.ConceptNameToId(conceptNames)
+                freq = self.CountConcepts(events=cluster,desc=True,min_score=min_score,filter=filter)
+                model=list(freq.keys())[:n_labels]
+                clfs[id]=model
+            return clfs
+        else:
+            freq=self.CountConcepts(events=events,desc=True,min_score=min_score,filter=filter)
+            model=list(freq.keys())[:n_labels]
+            return model
 
-        clfs={}
-        for id in keys:
-            if verbose:
-                print(id)
-
-            if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_y.txt"):
-                #TODO
-                y = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_y.txt", delimiter=self.sep,skip_header=1, dtype=int)
-            else:
-                y = dset[id][1]
-            if len(y.keys())==0 or len(y[list(y.keys())[0]])<2:
-                clfs[id]=None
-                continue
-
-            freq = sorted(y.items(), key=lambda x: sum(x[1]),reverse=True)[:n_labels]
-            model=[]
-            for cid,val in freq:
-                model.append(cid)
-            clfs[id]=model
-        return clfs
-
-    def MLMFPredict(self,model,key,yset):
+    def MLMFPredict(self,model,yset):
         concepts=list(yset.keys())
         train_y=OrderedDict()
         n_samples=len(yset[concepts[0]])
@@ -942,13 +1132,18 @@ class EventRelationships:
 
     ### Validation metrics ######################################################################################################################
 
-    def HammingScore(self,y_true, y_pred,verbose=False,xset=None,yset=None):
+    def HammingScore(self,y_true, y_pred,verbose=False,xset=None,yset=None,print_names=False,separate=True):
         '''
         Compute the Hamming score (a.k.a. label-based accuracy) for the multi-label case
         https://stackoverflow.com/q/32239577/395857
         '''
         if verbose:
             print("Calculating Hamming Score / Jaccard Index")
+        if not separate:
+            nsamples=0
+            npred=0
+            ntrue=0
+            ncorrect=0
         acc_list = []
         for i in range(y_true.shape[0]):
             set_true = set(np.where(y_true[i])[0])
@@ -959,13 +1154,19 @@ class EventRelationships:
                 tmp_a = 1
             else:
                 if verbose:
-                    print("N Predicted: "+str(len(set_pred)))
-                    print("N True: "+str(len(set_true)))
-                    print("N Correctly predicted: "+str(len(set_true.intersection(set_pred))))
+                    if separate:
+                        print("N Predicted: "+str(len(set_pred)))
+                        print("N True: "+str(len(set_true)))
+                        print("N Correctly predicted: "+str(len(set_true.intersection(set_pred))))
+                    else:
+                        nsamples+=1
+                        npred+=len(set_pred)
+                        ntrue+=len(set_true)
+                        ncorrect+=len(set_true.intersection(set_pred))
                 tmp_a = len(set_true.intersection(set_pred)) / float(len(set_true.union(set_pred)))
 
             acc_list.append(tmp_a)
-            if verbose:
+            if print_names:
                 train_x = np.asarray(list(xset.values()))
 
                 set_attr = set(np.where(train_x.T[i])[0])
@@ -984,7 +1185,11 @@ class EventRelationships:
                 print("Actual classes: ")
                 print(names)
 
-
+        if not separate:
+            print("N Samples: "+str(nsamples))
+            print("N Predicted: " + str(npred))
+            print("N True: " + str(ntrue))
+            print("N Correctly predicted: " + str(ncorrect))
         return np.mean(acc_list)
 
 
@@ -992,21 +1197,22 @@ class EventRelationships:
     ### Machine Learning ######################################################################################################################
 
     # show cluster shapes
-    def CountClusterSize(self,labels):
+    def CountClusterSize(self,labels,plot=True):
         cs = dict.fromkeys(set(labels),0)
         for label in labels:
             cs[label]+=1
         print(list(cs.values()))
-        self.Plot(list(cs.values()))
+        #print(cs)
+        if plot:
+            self.Plot(list(cs.values()))
 
     # compute top concepts for each cluster
-    def GetClusterConcepts(self,labels,n_concepts=20,method="frequency",out=None):
-        clusters = self.GetClusters(labels)
+    def GetClusterConcepts(self,clusters,n_concepts=20,method="frequency",out=None):
         df=pd.DataFrame(columns=["cluster", "concepts"])
         incoming = []
-        for label,cluster in clusters.groupby(level=0):
+        for label,cluster in clusters.groupby("cluster"):
             print(label)
-            count = self.CountConcepts(events=cluster,method=method,desc=True)
+            count = self.CountConcepts(events=cluster,method=method,desc=True,min_score=0)
             count = OrderedDict(islice(count.items(), min(n_concepts,len(count))))
             if method.lower() == "score".lower():
                 concepts = ",".join(map(lambda c: "(" + str(c[0]) + "," + str(c[1][0]) + ")", count.items()))
@@ -1083,14 +1289,13 @@ class EventRelationships:
 
     # same as above, but with clusters of clusters
     def ShowClusterRelationships(self,labels,clusterLabels,out):
-        clusters=self.GetClusters(labels,clusterLabels=clusterLabels,avgDate=True)
+        clusters=self.GetClusters(labels,groupLabels=clusterLabels)
 
-        tab ="\t"
         with open(os.path.join(self.results_subdir, out) + ".txt", "w", encoding=self.enc, newline=self.nl) as f:
-            for _, group in clusters.groupby(level=0):
+            for _, group in clusters.groupby("groupCluster"):
                 f.write("New group: "+self.nl)
-                for _,cluster in group.groupby("avgDate"):
-                    f.write(tab+"New cluster: " + self.nl+tab+tab)
+                for _,cluster in group.groupby("cluster"):
+                    f.write(self.tab+"New cluster: " + self.nl+self.tab+self.tab)
                     for _, event in cluster.iterrows():
                         f.write(str(event["title"]) + " [" + event["date"] + "] => ")
                     f.write(self.nl)
@@ -1112,7 +1317,7 @@ class EventRelationships:
         return (model,labels)
 
     # compile the clustered events in a multiindex dataframe
-    def GetClusters(self,labels,sorted=True,events=None,clusterLabels=None,avgDate=False):
+    def GetClustersMultiindex(self,labels,sorted=True,events=None,clusterLabels=None,avgDate=False):
         if events is None:
             events=self.GetEvents()
             events["cluster"]=labels
@@ -1129,7 +1334,7 @@ class EventRelationships:
                 groupLabels = g["cluster"].values
                 e = events.loc[events["cluster"].isin(set(groupLabels))]
 
-                clusters[clusterLabel] = self.GetClusters(events=e,labels=groupLabels,avgDate=avgDate)
+                clusters[clusterLabel] = self.GetClustersMultiindex(events=e,labels=groupLabels,avgDate=avgDate)
             print("done")
         else:
             clusters = {label: pd.DataFrame() for label in set(labels)}
@@ -1284,14 +1489,18 @@ class EventRelationships:
     ### Data Visualisation #########################################################################################################################
 
     # plot data
-    def Plot(self,x,type="bar"):
+    def Plot(self, vals, type="bar", x_labels=None):
         if type.lower()=="bar":
             fig, ax = plt.subplots()
-            ax.bar(range(len(x)),x,align="center")
+            ax.bar(range(len(vals)), vals, align="center")
+            if x_labels is not None:
+                ax.set_xticks(range(len(vals)))
+                plt.xticks(rotation=90)
+                ax.set_xticklabels(x_labels)
         elif type.lower()=="line":
-            plt.plot(x)
+            plt.plot(vals)
         elif type.lower()=="dendrogram":
-            dendrogram(x#,
+            dendrogram(vals  #,
                        #leaf_rotation=90.,  # rotates the x axis labels
                        #leaf_font_size=8.,  # font size for the x axis labels
                        )
@@ -1394,11 +1603,13 @@ class EventRelationships:
             return roll.median()
 
     # compute concept frequency and order by method
-    def CountConcepts(self,out=None,events=None,method="frequency",desc=False):
+    def CountConcepts(self,out=None,events=None,method="frequency",desc=False,min_score=50,values_only=False,include_names=False,filter=None):
         if events is None:
             events = self.GetEvents()
-        concepts = self.GetConcepts()
         vocab=defaultdict(list)
+        if include_names:
+            idnamed=self.GetConceptIdToNameLookupDict()
+            names = []
         for i,event in events.iterrows():
             try:
                 conceptsList = ast.literal_eval(event["concepts"])
@@ -1406,21 +1617,33 @@ class EventRelationships:
                 print(str(i))
                 print(event["concepts"])
             for id,score in conceptsList:
-                if len(vocab[id])==0:
-                    vocab[id].append(0)
-                    vocab[id].append(0)
-                    #vocab[id].append(concepts.loc[concepts["conceptId"]==str(id)]["title"].values[0])
-                vocab[id][0]+=score
-                vocab[id][1]+=1
+                if score>=min_score and (filter is None or id in filter):
+                    if len(vocab[id])==0:
+                        vocab[id].append(0)
+                        vocab[id].append(0)
+                        if include_names:
+                            vocab[id].append(idnamed[str(id)])
+                            names.append(idnamed[str(id)])
+                    vocab[id][0]+=score
+                    vocab[id][1]+=1
         if method.lower()=="score".lower():
             v=OrderedDict(sorted(vocab.items(), key=lambda cpt: cpt[1][0],reverse=desc))
+            if values_only:
+                v = [e[0] for e in v.values()]
         elif method.lower()=="frequency".lower():
             v=OrderedDict(sorted(vocab.items(), key=lambda cpt: cpt[1][1],reverse=desc))
+            if values_only:
+                v = [e[1] for e in v.values()]
         elif method.lower()=="average".lower():
             v=OrderedDict(sorted(vocab.items(), key=lambda cpt: cpt[1][0]/cpt[1][1],reverse=desc))
+            if values_only:
+                v = [e[0]/e[1] for e in v.values()]
         if out is not None:
             with open(os.path.join(self.data_subdir, out) + ".json", "w", encoding=self.enc) as f:
                 json.dump(v, f, indent=2)
+
+        if include_names:
+            return(v,names)
 
         return v
 
