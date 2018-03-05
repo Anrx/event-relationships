@@ -115,9 +115,8 @@ if __name__ == '__main__':
     er = EventRelationships("events", "concepts", "categories", connect=False)
     er.CrossValidateByCluster()
 
-
 ### testing ######################################################################################################################
-    #er = EventRelationships("events", "concepts", "categories", connect=False)
+    #er = EventRelationships("events_train", "concepts", "categories", connect=False)
     #er.TrainTestSplit("2017-09-01")
 
     #er = EventRelationships("events_train", "concepts", "categories", connect=True)
@@ -128,12 +127,14 @@ if __name__ == '__main__':
     #v,n=er.CountConcepts(events=train,desc=True, min_score=0,values_only=True,include_names=True)
     #er.Plot(v[:50],x_labels=n[:50])
 
-    #trainMatrix, trainVocab = er.CsrMatrix(events=train, min_events=5, verbose=True, out="csr_matrix_min5_train_cluster538")
+    #trainMatrix, trainVocab = er.CsrMatrix(min_events=50, verbose=True)
     #trainModel, trainLabels = er.KMeans(trainMatrix, 1000, useMiniBatchKMeans=True, nar=True,
     #                                    out="MiniBatchKMeans_1000_min5_train_cluster538")
     #train["cluster"] = trainLabels
     #er.CountClusterSize(model.labels_)
     #er.ShowRelationships(model.labels_, "MiniBatchKMeans_1000_min5_train_cluster538", train)
 
-### dimenosionality reduction ######################################################################################################################
+### Sequential clustering ######################################################################################################################
     #er = EventRelationships("events", "concepts", "categories", connect=False)
+    #er.ClusterByTimeWindow()
+    #er.PredictByCluster()

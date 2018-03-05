@@ -1,21 +1,23 @@
-import numpy
+import numpy as np
 from scipy.sparse import csr_matrix
 from sklearn import metrics
 from bisect import bisect_left
 from datetime import date
+from scipy.stats import threshold
 import os.path
 import pickle
 import json
 import ast
+import math
 from datetime import date,timedelta
 #saves a spare csr matrix as .npz
 def save_sparse_csr(filename, x):
-    numpy.savez(filename, data=x.data, indices=x.indices,
+    np.savez(filename, data=x.data, indices=x.indices,
                 indptr=x.indptr, shape=x.shape)
 
 #loads a spare csr matrix
 def load_sparse_csr(filename):
-    csr = numpy.load(filename+".npz")
+    csr = np.load(filename+".npz")
     return csr_matrix((csr['data'], csr['indices'], csr['indptr']),
                       shape=csr['shape'])
 
@@ -43,7 +45,6 @@ def mkdir(dir):
 #checks if a file exists
 def file_exists(filename):
     return os.path.isfile(filename)
-
 
 #saves an object in binary
 def save_model(model,out):
@@ -97,3 +98,15 @@ def AverageDate(cluster):
 def GroupBySorter(cluster,sortby):
     cluster.sort_values(sortby, inplace=True)
     return cluster
+
+# compute mean by dataframe row
+def NoZeroMean(d):
+    return np.nanmean(d.values, axis=1)
+
+def sigmoid(z):
+    return [1 / (1 + math.exp(-n)) for n in z]
+
+def bin_encode(x,limit=0.5):
+    x=threshold(x,threshmin=limit,newval=0)
+    x=threshold(x,threshmax=limit,newval=1)
+    return x
