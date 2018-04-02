@@ -8,8 +8,14 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.cluster import Birch
 from sklearn.cluster import MeanShift
 from sklearn.cluster import SpectralClustering
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.decomposition import TruncatedSVD
 from sklearn.ensemble import IsolationForest
+from sklearn.metrics import hamming_loss
+from sklearn.metrics import jaccard_similarity_score
+from sklearn.metrics import precision_recall_fscore_support
+from sklearn.metrics import classification_report
+from sklearn.multiclass import OneVsRestClassifier
 from mlxtend.frequent_patterns import apriori
 from sklearn.model_selection import train_test_split
 from collections import OrderedDict
@@ -43,6 +49,7 @@ class EventRelationships:
     results_subdir = "results"
     models_subdir = "models"
     data_subdir = "data"
+    temp_subdir = "temp"
 
     def __init__(self, events_filename,concepts_filename,categories_filename, connect=True,key=None, settings=None):
         self.events_filename = events_filename
@@ -132,10 +139,11 @@ class EventRelationships:
             conceptCount = json.load(f)
         return conceptCount
 
-    def GetClusters(self,labels,events=None,groupLabels=None,sorted=True):
+    def GetClusters(self,labels=None,events=None,groupLabels=None,sorted=True):
         if events is None:
             events=self.GetEvents()
-        events["cluster"]=labels
+        if labels is not None:
+            events["cluster"]=labels
 
         if groupLabels is not None:
             groupClusterLabels=[]
@@ -597,7 +605,7 @@ class EventRelationships:
         return model
 
 
-        ### Dimensionality Reduction ######################################################################################################################
+    ### Dimensionality Reduction ######################################################################################################################
 
     def TruncatedSVD(self,x,n_components = 2,algorithm = "randomized",n_iter = 5,seed=None,tol=0.0):
         svd = TruncatedSVD(n_components=n_components,algorithm=algorithm, n_iter=n_iter, random_state=42,tol=tol)
@@ -747,118 +755,168 @@ class EventRelationships:
 
             print("k")
 
-    def CrossValidateByCluster(self,date_start="2017-09-04",date_end="2017-09-18",min_score=10,n_clusters=500,window_size=14,verbose=True,separate=False,min_events=100,dim_red=False,exclude_entities=True,knn_cluster_assignment=True,caching=False):
+    def CrossValidateByCluster(self,date_start="2017-10-09",date_end="2017-10-15",min_score=0,n_clusters=500,window_size=14,verbose=True,separate=False,min_events=100,dim_red=False,exclude_entities=True,knn_cluster_assignment=False,predict="concepts",lazy=True):
         dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end)).tolist()
-        if separate:
-            scores = defaultdict(list)
-            constantScores = defaultdict(list)
-        else:
-            scores=[]
-            constantScores=[]
-        for date in dateRange:
 
+        hammingScores=[]
+        hammingLossScores=[]
+        precisionScores = []
+        recallScores = []
+        fscoreScores = []
+
+        constantHammingScores=[]
+        constantHammingLossScores = []
+        constantPrecisionScores = []
+        constantRecallScores = []
+        constantFscoreScores = []
+
+        train=None
+        trainModel=None
+        dset=None
+        clfs=None
+        for date in dateRange:
             #split dset by date
             date = date.strftime('%Y-%m-%d')
             print(date)
-            train,test = self.TrainTestSplit(date)
+
+            if lazy and train is not None:
+                _, test = self.TrainTestSplit(date)
+            else:
+                train,test = self.TrainTestSplit(date)
 
             #create matrix and train clustering
             trainMatrix,trainVocab=self.CsrMatrix(events=train,min_events=min_events,verbose=verbose)
             #trainMatrix, trainVocab = self.CsrMatrix(events=train,min_events=min_events,date_wgt=100,concept_wgt=100,normalized=True,include_date=True,verbose=verbose)
-            if caching:
-                trainModel=load_model("crossValCluster",enc=self.enc)
-                trainLabels=trainModel.labels_
-            else:
-                #trainModel,trainLabels= self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=False,nar=verbose,seed=1,verbose=False,out="crossValCluster")
-                trainModel,trainLabels = self.AgglomerativeClustering(trainMatrix,n_clusters=n_clusters)
-            train["cluster"]=trainLabels
+
+            if not lazy or trainModel is None:
+                try:
+                    #trainModel=load_model("crossValClusterAgg"+date,enc=self.enc)
+                    trainModel=load_model("crossValCluster"+date,enc=self.enc)
+                    trainLabels=trainModel.labels_
+                except FileNotFoundError:
+                    trainModel,trainLabels= self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=False,nar=verbose,seed=1,verbose=False,out="crossValCluster"+date)
+                    #trainModel,trainLabels = self.AgglomerativeClustering(trainMatrix,n_clusters=n_clusters,out="crossValClusterAgg"+date)
+                train["cluster"]=trainLabels
 
             #performance info
             #silhuette(trainMatrix,trainLabels)
-            self.ShowRelationships(trainLabels, "crossValCLustering",train)
-            self.CountClusterSize(trainLabels,plot=False,events=train)
+            #self.ShowRelationships(None, "crossValClustering",train)
+            #self.CountClusterSize(trainLabels,plot=False,events=train)
 
             #assign cluster to today's events
             today=test.loc[test.date==date]
             todayCsr=self.CsrFromVocab(trainVocab,today,verbose=verbose)
             if knn_cluster_assignment:
-                knnModel = self.Clustering2KNN(trainLabels, trainMatrix)
+                knnModel = self.Clustering2KNN(train.cluster, trainMatrix)
                 todayLabels=knnModel.predict(todayCsr)
             else:
                 todayLabels= trainModel.predict(todayCsr)
             today.loc[:,"cluster"]=todayLabels
             todayClusters=set(todayLabels)
 
-            keys=None
-            if separate:
-                keys=todayClusters
-            if caching:
-                dset=load_model("dset",self.enc)
-            else:
-                dset = self.DatasetByCluster(events=train, window_size=window_size,min_score=min_score,min_events=min_events, exclude_entities=exclude_entities,out="dset")
-            if dim_red:
-                clfs,pcaModel=self.RandomForest(dset, keys=todayClusters, from_file=False,nar=verbose,separate=separate,random_state=1,dim_red=dim_red)
-            else:
-                clfs=self.RandomForest(dset, keys=todayClusters, from_file=False,nar=verbose,separate=separate,random_state=1,dim_red=dim_red)
-                #clfs=self.NeuralNetwork(dset,separate=separate,nar=verbose)
-            constantClfs=self.MultiLabelMostFrequent(train,keys=todayClusters,verbose=verbose,from_file=False,min_score=min_score,separate=separate,n_labels=10,filter=list(dset[1].keys()))
+            if not lazy or dset is None:
+                print("generated dset: ")
+                try:
+                    dset=load_model("dset"+date,self.enc)
+                except FileNotFoundError:
+                    dset = self.DatasetByCluster(events=train, window_size=window_size,min_score=min_score,min_events=min_events, exclude_entities=exclude_entities,out="dsetAgg"+date,predict=predict)
 
-            if not separate:
-                xset = OrderedDict({cid: [] for cid in list(dset[0].keys())})
-                yset = OrderedDict({cid: [] for cid in list(dset[1].keys())})
+            if lazy or clfs is None:
+                try:
+                    clfs = load_model("crossValPred"+date,self.enc)
+                except FileNotFoundError:
+                    if dim_red:
+                        clfs,pcaModel=self.RandomForest(dset, keys=todayClusters, from_file=False,nar=verbose,separate=separate,random_state=1,dim_red=dim_red,out="crossValPred"+date)
+                    else:
+                        clfs=self.RandomForest(dset, keys=todayClusters, from_file=False,nar=verbose,separate=separate,random_state=1,dim_red=dim_red,n_estimators=10,bootstrap=True,out="crossValPred"+date)
+                        #clfs=self.NeuralNetwork(dset)
+                constantClfs=self.MultiLabelMostFrequent(train,min_score=min_score,n_labels=10,filter=list(dset[1].keys()))
+
+            print("Building test set")
+            xset = OrderedDict({cid: [] for cid in list(dset[0].keys())})
+            yset = OrderedDict({cid: [] for cid in list(dset[1].keys())})
             for todayCluster in todayClusters:
-                if not separate or clfs[todayCluster] is not None and constantClfs[todayCluster] is not None:
-                    trainCluster=train.loc[train.cluster==todayCluster]
-                    group=today.loc[today.cluster==todayCluster]
-                    if separate:
-                        xset = OrderedDict({cid: [] for cid in list(dset[todayCluster][0].keys())})
-                        yset = OrderedDict({cid: [] for cid in list(dset[todayCluster][1].keys())})
+                trainCluster=train.loc[train.cluster==todayCluster]
+                group=today.loc[today.cluster==todayCluster]
 
-                    startDate = (str_to_date(date) - timedelta(days=window_size)).strftime('%Y-%m-%d')
-                    cond = np.logical_and(trainCluster.date>=startDate, trainCluster.date<date)
-                    self.Compile(xset, min_score,events=trainCluster.loc[cond],exclude_entities=False)
-                    self.Compile(yset, min_score,events=group,exclude_entities=False)
+                startDate = (str_to_date(date) - timedelta(days=window_size)).strftime('%Y-%m-%d')
+                cond = np.logical_and(trainCluster.date>=startDate, trainCluster.date<date)
+                self.Compile(xset, min_score,events=trainCluster.loc[cond],exclude_entities=False,predict=predict)
+                self.Compile(yset, min_score,events=group,exclude_entities=False,predict=predict)
 
-                    if separate:
-                        train_x = np.asarray(list(xset.values()))
-                        test_y = np.asarray(list(yset.values()))
+            print("Predicting")
+            train_x = np.asarray(list(xset.values())).T
+            test_y = np.asarray(list(yset.values())).T
+            if dim_red:
+                train_x=pcaModel.transform(train_x)
+                train_y = clfs.predict(train_x)
+            else:
+                #train_y = bin_encode(clfs.predict(train_x),limit=0.1)
+                train_y = clfs.predict(train_x)
+            constant_train_y = self.MLMFPredict(constantClfs, yset)
 
-                        train_y=clfs[todayCluster].predict(train_x.T)
-                        constant_train_y=self.MLMFPredict(constantClfs[todayCluster],yset)
-                        score=self.HammingScore(test_y.T,train_y,verbose=verbose,xset=xset,yset=yset,separate=separate)
-                        constantScore = self.HammingScore(test_y.T,constant_train_y,verbose=False,xset=xset,yset=yset,separate=separate)
-                        if verbose:
-                            print("Hamming score for " + str(todayCluster) + " is " + str(score))
-                            print("Constant score for " + str(todayCluster) + " is " + str(constantScore))
-                        scores[todayCluster].append(score)
-                        constantScores[todayCluster].append(constantScore)
+            hammingScore = self.HammingScore(test_y, train_y, verbose=verbose, xset=xset, yset=yset,separate=separate,print_names=False)
+            hammingLoss = hamming_loss(test_y,train_y)
+            prfs = precision_recall_fscore_support(test_y,train_y,average="samples")
 
-            if not separate:
-                train_x = np.asarray(list(xset.values()))
-                test_y = np.asarray(list(yset.values()))
+            constantHammingScore = self.HammingScore(test_y, constant_train_y, verbose=verbose, xset=xset, yset=yset,separate=separate)
+            constantHammingLoss = hamming_loss(test_y, constant_train_y)
+            constantPrfs = precision_recall_fscore_support(test_y, constant_train_y, average="samples")
 
-                if dim_red:
-                    train_x=pcaModel.transform(train_x.T)
-                    train_y = clfs.predict(train_x)
-                else:
-                    #train_y = bin_encode(clfs.predict(train_x.T),limit=0.05)
-                    train_y = clfs.predict(train_x.T)
-                constant_train_y = self.MLMFPredict(constantClfs, yset)
-                score = self.HammingScore(test_y.T, train_y, verbose=verbose, xset=xset, yset=yset,separate=separate)
-                constantScore = self.HammingScore(test_y.T, constant_train_y, verbose=verbose, xset=xset, yset=yset,separate=separate)
-                if verbose:
-                    print("Hamming score for " + date + " is " + str(score))
-                    print("Constant score for " + date + " is " + str(constantScore))
-                scores.append(score)
-                constantScores.append(constantScore)
-            break
-        if separate:
-            for key in scores.keys():
-                print("Mean Hamming Score for cluster "+str(key)+" x"+str(len(scores[key]))+" is "+str(np.mean(scores[key])))
-                print("Mean constant score for cluster "+str(key)+" is "+str(np.mean(constantScores[key]))+self.nl)
-        else:
-            print("Mean Hamming Score: " +str(np.mean(scores)))
-            print("Mean constant score: "+ str(np.mean(constantScores)) + self.nl)
+            hammingScores.append(hammingScore)
+            hammingLossScores.append(hammingLoss)
+            precisionScores.append(prfs[0])
+            recallScores.append(prfs[1])
+            fscoreScores.append(prfs[2])
+
+            constantHammingScores.append(constantHammingScore)
+            constantHammingLossScores.append(constantHammingLoss)
+            constantPrecisionScores.append(constantPrfs[0])
+            constantRecallScores.append(constantPrfs[1])
+            constantFscoreScores.append(constantPrfs[2])
+
+            #print(classification_report(test_y, train_y)) #,target_names=self.ConceptIdToName([yset.keys()])
+            print("Hamming score for " + date + " is " + str(hammingScore))
+            print("Hammming loss score for " + date + " is " + str(hammingLoss))
+            print("precision_recall_fscore_support for " + date + " is " + str(prfs))
+
+            print("Constant Hamming score for " + date + " is " + str(constantHammingScore))
+            print("Hammming loss score for " + date + " is " + str(hammingLoss))
+            print("precision_recall_fscore_support for " + date + " is " + str(prfs))
+
+            if lazy:
+                train = train.append(today,ignore_index=True)
+                for k, v in xset.items():
+                    dset[0][k]+=v
+                for k, v in yset.items():
+                    dset[1][k]+=v
+
+        print("Mean Hamming Score: " +str(np.mean(hammingScores)))
+        print("Mean Hamming loss score: "+ str(np.mean(hammingLossScores)))
+        print("Mean Precision score: "+ str(np.mean(precisionScores)))
+        print("Mean Recall score: "+ str(np.mean(recallScores)))
+        print("Mean Fscore score: "+ str(np.mean(fscoreScores)))
+
+        print("Mean constant Hamming score: "+ str(np.mean(constantHammingScores)))
+        print("Mean constant Hamming loss score: "+ str(np.mean(constantHammingLossScores)))
+        print("Mean constant Precision score: "+ str(np.mean(constantPrecisionScores)))
+        print("Mean constant Recall score: "+ str(np.mean(constantRecallScores)))
+        print("Mean constant Fscore score: "+ str(np.mean(constantFscoreScores)))
+
+
+    def AnalyzeDset(self,dset):
+        print("dset analysis")
+        x = np.asarray(list(dset[0].values()), dtype=int)
+        y = np.asarray(list(dset[1].values()), dtype=int)
+        print("n features: " + str(x.shape[0]))
+        print("n classes: " + str(y.shape[0]))
+        print("n samples: " + str(x.shape[1]) if len(x.shape) > 1 else 1)
+        print("x % full: " + str((np.count_nonzero(x) / x.size) * 100))
+        print("y % full: " + str((np.count_nonzero(y) / y.size) * 100))
+        np.savetxt(os.path.join(self.temp_subdir, "_x") + ".txt", x.T, delimiter=self.sep,
+                   header=self.sep.join(map(str, list(dset[0].keys()))), fmt="%d")
+        np.savetxt(os.path.join(self.temp_subdir, "_y") + ".txt", y.T, delimiter=self.sep,
+                   header=self.sep.join(map(str, list(dset[1].keys()))), fmt="%d")
 
     ### Multi-label prediction ######################################################################################################################
 
@@ -942,7 +1000,7 @@ class EventRelationships:
         else:
             return dset
 
-    def DatasetByCluster(self, labels=None, events=None, min_events=1, min_score=50, out=None,window_size=7,sliding=True, exclude_entities=True):
+    def DatasetByCluster(self, labels=None, events=None, min_events=1, min_score=50, out=None,window_size=7,sliding=True, exclude_entities=True,predict="concepts"):
         print("Making dataset")
         if min_events > 1:
             conceptCount = self.GetConceptCount()
@@ -958,6 +1016,7 @@ class EventRelationships:
         xset = OrderedDict()
         yset = OrderedDict()
         samples = 0
+        empties = 0
         for _,cluster in events.groupby("cluster"):
             dateMin = str_to_date(cluster.date.min())
             dateMax = str_to_date(cluster.date.max())
@@ -973,23 +1032,27 @@ class EventRelationships:
                 yCond = dates == endDate
                 yWindow = cluster.loc[yCond]
 
-                self.Compile(xset, min_score, samples=samples, events=xWindow, min_events=min_events,
-                             conceptCount=conceptCount, concept_info=concepts, exclude_entities=exclude_entities)
-                self.Compile(yset, min_score, samples=samples, events=yWindow, min_events=min_events,
-                             conceptCount=conceptCount, concept_info=concepts, exclude_entities=exclude_entities)
+                if(xWindow.size>0 and yWindow.size>0):
+                    self.Compile(xset, min_score, samples=samples, events=xWindow, min_events=min_events,
+                                 conceptCount=conceptCount, concept_info=concepts, exclude_entities=exclude_entities,predict=predict)
+                    self.Compile(yset, min_score, samples=samples, events=yWindow, min_events=min_events,
+                                 conceptCount=conceptCount, concept_info=concepts, exclude_entities=exclude_entities,predict=predict)
 
-                samples += 1
-                if sliding:
-                    startDate = (startDate + timedelta(days=1))
-                    endDate = (endDate + timedelta(days=1))
+                    samples += 1
                 else:
-                    startDate = endDate
-                    endDate = (endDate + timedelta(days=window_size))
+                    empties +=1
+
+                startDate = (startDate + timedelta(days=1))
+                endDate = (endDate + timedelta(days=1))
+
         x = np.asarray(list(xset.values()), dtype=int)
         y = np.asarray(list(yset.values()), dtype=int)
         print("n features: " + str(x.shape[0]))
         print("n classes: " + str(y.shape[0]))
         print("n samples: " + str(x.shape[1]) if len(x.shape) > 1 else 1)
+        print("n empties: " + str(empties))
+        print("x % full: "+str((np.count_nonzero(x)/x.size)*100))
+        print("y % full: "+str((np.count_nonzero(y)/y.size)*100))
         if out is not None:
             save_model((xset, yset), out)
             np.savetxt(os.path.join(self.data_subdir, "_x") + ".txt", x.T, delimiter=self.sep,
@@ -1034,29 +1097,45 @@ class EventRelationships:
             dset[conceptId]=(xset,yset)
         return dset
 
-    def Compile(self,dset,min_score,events=None,concepts=None,samples=None,min_events=1,conceptCount=None,concept_info=None,exclude_entities=True):
+    def Compile(self,dset,min_score,events=None,concepts=None,samples=None,min_events=1,conceptCount=None,concept_info=None,exclude_entities=False,predict="categories"):
         if exclude_entities:
             excluded_types=["loc","person","org"]
         used=set(dset.keys())
 
         excluded=0
+        if predict=="categories":
+            min_events=0
         if events is not None:
             for _,event in events.iterrows():
-                conceptList = ast.literal_eval(event.concepts)
+                conceptList = ast.literal_eval(event[predict])
                 included=False
-                for id,score in conceptList:
+                if(isinstance(conceptList[0],int)):
+                    id,score = conceptList
                     if score >= min_score:
-                        if (not exclude_entities or concept_info.loc[id,:].type not in excluded_types) and (min_events<2 or conceptCount[str(id)][1]>=min_events):
+                        if (not exclude_entities or concept_info.loc[id, :].type not in excluded_types) and (
+                                        min_events < 2 or conceptCount[str(id)][1] >= min_events):
                             if id in used:
                                 dset[id].append(1)
                                 used.remove(id)
-                                included=True
+                                included = True
                             elif samples is not None:
-                                dset[id]=[0 for _ in range(samples)]
+                                dset[id] = [0 for _ in range(samples)]
                                 dset[id].append(1)
                                 included = True
-                    else:
-                        break
+                else:
+                    for id,score in conceptList:
+                        if score >= min_score:
+                            if (not exclude_entities or concept_info.loc[id,:].type not in excluded_types) and (min_events<2 or conceptCount[str(id)][1]>=min_events):
+                                if id in used:
+                                    dset[id].append(1)
+                                    used.remove(id)
+                                    included=True
+                                elif samples is not None:
+                                    dset[id]=[0 for _ in range(samples)]
+                                    dset[id].append(1)
+                                    included = True
+                        else:
+                            break
                 if not included:
                     excluded+=1
         else:
@@ -1081,86 +1160,40 @@ class EventRelationships:
         for id in used:
             dset[id].append(0)
 
-        #print("n excluded: "+str(excluded))
-
     # random forest prediction
-    def RandomForest(self, dset,separate=True,conceptNames=None, keys=None,nar=True, from_file=False, n_estimators=10, criterion="gini", max_depth=None, min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0, max_features="auto", max_leaf_nodes=None, min_impurity_decrease=0.0, min_impurity_split=None, bootstrap=True, oob_score=False, n_jobs=1, random_state=None, verbose=0, warm_start=False, class_weight=None,dim_red=False,dim_red_model=None):
-        from sklearn.ensemble import RandomForestClassifier
+    def RandomForest(self, dset,separate=True,conceptNames=None, keys=None,nar=True, from_file=False, n_estimators=10, criterion="gini", max_depth=None, min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0, max_features="auto", max_leaf_nodes=None, min_impurity_decrease=0.0, min_impurity_split=None, bootstrap=True, oob_score=False, n_jobs=1, random_state=None, verbose=0, warm_start=False, class_weight=None,dim_red=False,dim_red_model=None,out=None):
         print("Training random forest")
 
-        if separate:
-            if keys is None:
-                keys = self.ConceptNameToId(conceptNames)
-            clfs={}
-            for id in keys:
-                if nar:
-                    print(id)
-                if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_x.txt"):
-                    x = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_x.txt",delimiter=self.sep,skip_header=1,dtype=int)
-                else:
-                    x = np.asarray(list(dset[id][0].values()), dtype=int).T
-                if x.shape[0]==0 or len(x.shape)<2:
-                    clfs[id]=None
-                    continue
-                if from_file and file_exists(os.path.join(self.data_subdir, str(id)) + "_y.txt"):
-                    y = np.genfromtxt(os.path.join(self.data_subdir, str(id)) + "_y.txt", delimiter=self.sep,skip_header=1, dtype=int)
-                else:
-                    y = np.asarray(list(dset[id][1].values()), dtype=int).T
-                if y.shape[0]==0 or len(y.shape)<2:
-                    clfs[id]=None
-                    continue
-                model = RandomForestClassifier(n_estimators=n_estimators, criterion=criterion, max_depth=max_depth, min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf, min_weight_fraction_leaf=min_weight_fraction_leaf, max_features=max_features, max_leaf_nodes=max_leaf_nodes, min_impurity_decrease=min_impurity_decrease, min_impurity_split=min_impurity_split, bootstrap=bootstrap, oob_score=oob_score, n_jobs=n_jobs, random_state=random_state, verbose=verbose, warm_start=warm_start, class_weight=class_weight)
-
-                model.fit(x,y)
-                clfs[id]=model
-            return clfs
+        x = np.asarray(list(dset[0].values()), dtype=int).T
+        y = np.asarray(list(dset[1].values()), dtype=int).T
+        model = RandomForestClassifier(n_estimators=n_estimators, criterion=criterion, max_depth=max_depth,
+                                       min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf,
+                                       min_weight_fraction_leaf=min_weight_fraction_leaf, max_features=max_features,
+                                       max_leaf_nodes=max_leaf_nodes, min_impurity_decrease=min_impurity_decrease,
+                                       min_impurity_split=min_impurity_split, bootstrap=bootstrap,
+                                       oob_score=oob_score, n_jobs=n_jobs, random_state=random_state,
+                                       verbose=verbose, warm_start=warm_start, class_weight=class_weight)
+        if dim_red:
+            if dim_red_model is None:
+                reduced,pcaModel = self.PCA(x,n_components=100)
+            else:
+                reduced = dim_red_model.transform(x)
+            model.fit(reduced, y)
+            if out is not None:
+                save_model(model,out)
+                save_model(pcaModel, out)
+            return model,pcaModel
         else:
-            if from_file and file_exists(os.path.join(self.data_subdir, "_x") + ".txt"):
-                x = np.genfromtxt(os.path.join(self.data_subdir, "_x") + ".txt", delimiter=self.sep, skip_header=1,dtype=int)
-            else:
-                x = np.asarray(list(dset[0].values()), dtype=int).T
-            if from_file and file_exists(os.path.join(self.data_subdir, "_y") + ".txt"):
-                y = np.genfromtxt(os.path.join(self.data_subdir, "_y") + ".txt", delimiter=self.sep, skip_header=1,dtype=int)
-            else:
-                y = np.asarray(list(dset[1].values()), dtype=int).T
-            model = RandomForestClassifier(n_estimators=n_estimators, criterion=criterion, max_depth=max_depth,
-                                           min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf,
-                                           min_weight_fraction_leaf=min_weight_fraction_leaf, max_features=max_features,
-                                           max_leaf_nodes=max_leaf_nodes, min_impurity_decrease=min_impurity_decrease,
-                                           min_impurity_split=min_impurity_split, bootstrap=bootstrap,
-                                           oob_score=oob_score, n_jobs=n_jobs, random_state=random_state,
-                                           verbose=verbose, warm_start=warm_start, class_weight=class_weight)
-            if dim_red:
-                if dim_red_model is None:
-                    reduced,pcaModel = self.PCA(x,n_components=100)
-                else:
-                    reduced = dim_red_model.transform(x)
-                model.fit(reduced, y)
-                return model,pcaModel
-            else:
-                model.fit(x, y)
-                return model
-
-    def MultiLabelMostFrequent(self, events, n_labels=10,keys=None,conceptNames=None,verbose=True,from_file=False,min_score=50,separate=True,filter=None):
-        if verbose:
-            print("Training most frequent classfier")
-        if separate:
-            if keys is None:
-                keys = self.ConceptNameToId(conceptNames)
-            clfs={}
-            for id in keys:
-                cluster=events.loc[events.cluster==id]
-                if verbose:
-                    print(id)
-
-                freq = self.CountConcepts(events=cluster,desc=True,min_score=min_score,filter=filter)
-                model=list(freq.keys())[:n_labels]
-                clfs[id]=model
-            return clfs
-        else:
-            freq=self.CountConcepts(events=events,desc=True,min_score=min_score,filter=filter)
-            model=list(freq.keys())[:n_labels]
+            model.fit(x, y)
+            if out is not None:
+                save_model(model,out)
             return model
+
+    def MultiLabelMostFrequent(self, events, n_labels=10,min_score=50,filter=None):
+        print("Training most frequent classfier")
+        freq=self.CountConcepts(events=events,desc=True,min_score=min_score,filter=filter)
+        model=list(freq.keys())[:n_labels]
+        return model
 
     def MLMFPredict(self,model,yset):
         concepts=list(yset.keys())
@@ -1252,7 +1285,7 @@ class EventRelationships:
 
         return df
 
-    def NeuralNetwork(self,dset,separate=False,nar=True):
+    def NeuralNetwork(self,dset,out=None):
         from keras.models import Sequential
         from keras.layers import Dense
         print("Training neural network")
@@ -1266,6 +1299,9 @@ class EventRelationships:
         nn.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
         nn.fit(x, y, batch_size=16, epochs=5,verbose=0, validation_split=0.1)
+
+        if out is not None:
+            save_model(nn,out)
 
         return nn
 
@@ -1294,6 +1330,7 @@ class EventRelationships:
             npred=0
             ntrue=0
             ncorrect=0
+            nblank=0
         acc_list = []
         for i in range(y_true.shape[0]):
             set_true = set(np.where(y_true[i])[0])
@@ -1302,17 +1339,16 @@ class EventRelationships:
             tmp_a = None
             if len(set_true) == 0 and len(set_pred) == 0:
                 tmp_a = 1
+                nblank+=1
             else:
                 if verbose:
-                    if separate:
-                        print("N Predicted: "+str(len(set_pred)))
-                        print("N True: "+str(len(set_true)))
-                        print("N Correctly predicted: "+str(len(set_true.intersection(set_pred))))
-                    else:
-                        nsamples+=1
-                        npred+=len(set_pred)
-                        ntrue+=len(set_true)
-                        ncorrect+=len(set_true.intersection(set_pred))
+                    #print("N Predicted: "+str(len(set_pred)))
+                    #print("N True: "+str(len(set_true)))
+                    #print("N Correctly predicted: "+str(len(set_true.intersection(set_pred))))
+                    nsamples+=1
+                    npred+=len(set_pred)
+                    ntrue+=len(set_true)
+                    ncorrect+=len(set_true.intersection(set_pred))
                 tmp_a = len(set_true.intersection(set_pred)) / float(len(set_true.union(set_pred)))
 
             acc_list.append(tmp_a)
@@ -1340,6 +1376,7 @@ class EventRelationships:
             print("N Predicted: " + str(npred))
             print("N True: " + str(ntrue))
             print("N Correctly predicted: " + str(ncorrect))
+            print("N Blank: " + str(nblank))
         return np.mean(acc_list)
 
 
@@ -1391,6 +1428,7 @@ class EventRelationships:
     def TrainTestSplit(self,date,out=False):
         print("Splitting dataset to train and test sets by date: " +date)
         events = self.GetEvents()
+
         train = events.loc[events.date<date]
         test = events.loc[events.date>=date]
         if out:
@@ -1438,7 +1476,8 @@ class EventRelationships:
     # write all the clusters to a file in a human readable format
     def ShowRelationships(self,labels,out,events):
         with open(os.path.join(self.results_subdir,out)+".txt", "w", encoding=self.enc, newline=self.nl) as f:
-            for _,cluster in events.groupby("cluster"):
+            clusters = self.GetClusters(labels,events)
+            for _,cluster in clusters.groupby("cluster"):
                 f.write("New cluster: "+self.nl)
                 for _,event in cluster.iterrows():
                     f.write(str(event["title"])+" ["+event["date"]+"] => ")
@@ -1637,6 +1676,18 @@ class EventRelationships:
 
         return concepts
 
+    def ShowDateRange(self):
+        events=self.GetEvents()
+        dateMin = str_to_date(events.date.min())
+        dateMax = str_to_date(events.date.max())
+        dateRange = pd.date_range(dateMin, dateMax).tolist()
+        dates=pd.to_datetime(events.date)
+        counts = []
+        for date in dateRange:
+            cond = (dates == date).values
+            counts.append(sum(cond))
+
+        self.Plot(counts,x_labels=dateRange)
 
 
     ### Data Visualisation #########################################################################################################################

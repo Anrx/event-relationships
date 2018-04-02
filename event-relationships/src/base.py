@@ -115,7 +115,7 @@ if __name__ == '__main__':
     er = EventRelationships("events", "concepts", "categories", connect=False)
     er.CrossValidateByCluster()
 
-### testing ######################################################################################################################
+### double clustering ######################################################################################################################
     #er = EventRelationships("events_train", "concepts", "categories", connect=False)
     #er.TrainTestSplit("2017-09-01")
 
@@ -138,3 +138,11 @@ if __name__ == '__main__':
     #er = EventRelationships("events", "concepts", "categories", connect=False)
     #er.ClusterByTimeWindow()
     #er.PredictByCluster()
+### other ######################################################################################################################
+    #er = EventRelationships("events", "concepts", "categories", connect=False)
+    #events=er.GetEvents()
+    #cat=events.loc[events.categories!="null"]
+    #cat.to_csv(os.path.join(er.data_subdir, er.events_filename) + "_cat.csv", sep=er.sep, index=False,encoding=er.enc)
+
+    #er = EventRelationships("events", "concepts", "categories", connect=False)
+    #er.ShowDateRange()
