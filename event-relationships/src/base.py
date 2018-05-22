@@ -1,22 +1,17 @@
 from src.eventrelationships import *
 from src.Kmeans import *
 from src.helpers import *
-from sklearn import metrics
-import pandas
-#from eventregistry import *
-import copy
+from src.erinterface import *
 
 if __name__ == '__main__':
 ### generate dataset ######################################################################################################################
-    #er=EventRelationships("events","concepts","categories")
+    #er=ErInterface()
     #er.GenerateEventsCsv(er.GetEventsIter(["society issues"]))
-
-    #concat events
-    #er=EventRelationships("events","concepts","categories",connect=False)
-    #er.ConcatEvents()
-    #er.ConcatConcepts()
+    #er.GetEventsObj(categories=["society issues"],dateStart="2016-01-01",dateEnd="2016-02-02")
 
 
+    #er=ErInterface(False)
+    #er.RemoveDuplicates(er.GetEvents(),"events.csv")
 
 ### generate csr matrix ######################################################################################################################
     #er=EventRelationships("events_train","concepts","categories",connect=False)
@@ -66,6 +61,7 @@ if __name__ == '__main__':
     #er.ShowRelationships(labels, "NMF_1000_min5_train",events)
 
 
+
 #find specific clusters
     #er=EventRelationships("events","concepts","categories",connect=True)
     #model = load_model("KMeans-100-date-wgt5000",er.enc)
@@ -75,18 +71,16 @@ if __name__ == '__main__':
 
 ### visualization ######################################################################################################################
     #prepare dataset for heatmap
-    #er = EventRelationships("events", "concepts", "categories", connect=False)
-    #er.ConceptHeatmap(out="ConceptHeatmap")
+    #er = EventRelationships()
+    #er.ConceptHeatmap(out="conceptHeatmap")
+    #er.CountConcepts(out="conceptCount",include_names=True)
+    #er.ConceptFrequencyHeatmap(n_days=366,n_concepts=300)
 
     #concept line graph
     #er = EventRelationships("events", "concepts", "categories", connect=True)
     #er.ConceptFrequencyLineGraph(["gun control","mass shooting"])
     #er.ConceptFrequencyLineGraph(["gun control","mass shooting"],method="mean")
     #er.ConceptFrequencyLineGraph(["gun control","mass shooting"],method="median")
-
-    #concept frequency heat map
-    #er = EventRelationships("events", "concepts", "categories", connect=True)
-    #er.ConceptFrequencyHeatmap(n_days=90)
 
 
 
@@ -111,9 +105,26 @@ if __name__ == '__main__':
 
     #er.ShowClusterRelationships(model.labels_,groupModel.labels_,"AgglomerativeRelationships500")
 
+
+
 ### random forest prediction ######################################################################################################################
-    er = EventRelationships("events", "concepts", "categories", connect=False)
+    er = EventRelationships()
     er.CrossValidateByCluster()
+    #er.PlotBinomialDistribution()
+
+    #train,test = er.TrainTestSplit("2016-04-25",out=True)
+    #er.Cluster(out="bestCluster")
+    #model =load_model("scipy2016-04-25",er.enc)
+    #er.ShowDendrogram(model,p=50000)
+    #er.FindDuplicates()
+    #model=load_model("bestCluster",er.enc)
+    #events, test = er.TrainTestSplit("2016-04-25")
+    #matrix,vocab=er.CsrMatrix(events=events,min_events=100,verbose=True)
+    #model, labels = er.KMeans(matrix, 500, useMiniBatchKMeans=False, seed=er.seed, out="500Kmeans2016-04-25")
+    #model,labels = er.CosineKmeans(matrix,500)
+    #save_model(model,"500CosineKmeans2016-04-25")
+    #er.ShowRelationships(model.labels_,"200DBSCAN2016-04-25rel",events)
+
 
 ### double clustering ######################################################################################################################
     #er = EventRelationships("events_train", "concepts", "categories", connect=False)
@@ -134,15 +145,24 @@ if __name__ == '__main__':
     #er.CountClusterSize(model.labels_)
     #er.ShowRelationships(model.labels_, "MiniBatchKMeans_1000_min5_train_cluster538", train)
 
+
+
 ### Sequential clustering ######################################################################################################################
     #er = EventRelationships("events", "concepts", "categories", connect=False)
     #er.ClusterByTimeWindow()
     #er.PredictByCluster()
+
+
+
 ### other ######################################################################################################################
     #er = EventRelationships("events", "concepts", "categories", connect=False)
     #events=er.GetEvents()
     #cat=events.loc[events.categories!="null"]
     #cat.to_csv(os.path.join(er.data_subdir, er.events_filename) + "_cat.csv", sep=er.sep, index=False,encoding=er.enc)
 
-    #er = EventRelationships("events", "concepts", "categories", connect=False)
-    #er.ShowDateRange()
+    #er = EventRelationships()
+    #cc = er.GetConceptCount()
+    #cccounts=[item[1] for key,item in cc.items()]
+    #er.PlotDistribution(cccounts)
+
+    #er.PlotEventDateRange()

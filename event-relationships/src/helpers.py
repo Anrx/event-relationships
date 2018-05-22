@@ -21,12 +21,6 @@ def load_sparse_csr(filename):
     return csr_matrix((csr['data'], csr['indices'], csr['indptr']),
                       shape=csr['shape'])
 
-#calculates and prints silhuette score
-def silhuette(matrix,labels):
-    score = metrics.silhouette_score(matrix, labels)
-    print("Silhouette Coefficient: " + str(score))
-    return score
-
 #uses bisection to find item in arr and returns false if item is not present in arr
 def binsearch(arr,item):
     index = bisect_left(arr,item)
@@ -110,3 +104,6 @@ def bin_encode(x,limit=0.5):
     x=threshold(x,threshmin=limit,newval=0)
     x=threshold(x,threshmax=limit,newval=1)
     return x
+
+def string_to_object(x):
+    return ast.literal_eval(x)
