@@ -109,11 +109,20 @@ if __name__ == '__main__':
 
 ### random forest prediction ######################################################################################################################
     er = EventRelationships()
-    er.CrossValidateByCluster()
+    #date = "2016-04-25"
+    #train, test = er.TrainTestSplit(date)
+    #trainModel = load_model("scipy" + date, enc=er.enc)
+    #trainLabels = fcluster(trainModel, 1000, criterion="distance")
+    #clusters = er.GetClusters(trainLabels,train)
+    #er.AverageChronologicalLinkage(clusters)
+    #er.CrossValidateByCluster()
+    #er.ConceptHeatmap(out="conceptHeatmapFreq")
+    er.ConceptFrequencyHeatmap()
+    #er.PlotConceptTypes()
     #er.PlotBinomialDistribution()
 
     #train,test = er.TrainTestSplit("2016-04-25",out=True)
-    #er.Cluster(out="bestCluster")
+    #er.Cluster()
     #model =load_model("scipy2016-04-25",er.enc)
     #er.ShowDendrogram(model,p=50000)
     #er.FindDuplicates()
@@ -151,8 +160,6 @@ if __name__ == '__main__':
     #er = EventRelationships("events", "concepts", "categories", connect=False)
     #er.ClusterByTimeWindow()
     #er.PredictByCluster()
-
-
 
 ### other ######################################################################################################################
     #er = EventRelationships("events", "concepts", "categories", connect=False)

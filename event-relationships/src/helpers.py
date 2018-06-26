@@ -53,7 +53,7 @@ def load_model(filename,enc):
 
 #normalizes given value to a range of 1
 def normalize(val,min,max):
-    return (val-min)/(max-min)
+    return 0 if (max-min)==0 else (val-min)/(max-min)
 
 #returns a date object from a string like YYYY-MM-DD
 def str_to_date(d):

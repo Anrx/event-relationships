@@ -95,7 +95,7 @@ class EventRelationships:
         return pd.read_csv(os.path.join(self.data_subdir, self.categories_filename) + ".csv", sep=self.sep, encoding=self.enc, dtype=str,index_col=index_col)  # read categories into dataframe
 
     def GetHeatmap(self):
-        return pd.read_csv(os.path.join(self.data_subdir,"conceptHeatmap")+".csv", sep=self.sep, encoding=self.enc, index_col=0)  # read frequencies into dataframe
+        return pd.read_csv(os.path.join(self.data_subdir,"conceptHeatmapFreq")+".csv", sep=self.sep, encoding=self.enc, index_col=0)  # read frequencies into dataframe
 
     def GetConceptCount(self):
         with open(os.path.join(self.data_subdir, "conceptCount") + ".json", "r", encoding=self.enc) as f:
@@ -109,11 +109,12 @@ class EventRelationships:
             if props[1]>=min_events: validConcepts.add(id)
         return validConcepts
 
-    def GetClusters(self,labels=None,events=None,groupLabels=None,sorted=True):
+    def GetClusters(self,labels=None,events=None,groupLabels=None,sorted=True,inplace=True):
         if events is None:
             events=self.GetEvents()
+        if not inplace:
+            events =events.copy()
         if labels is not None:
-            asd = set(labels)
             events["cluster"]=labels
 
         if groupLabels is not None:
@@ -162,11 +163,13 @@ class EventRelationships:
         return matrix
 
     #compute csr matrix from data
-    def CsrMatrix(self,out=None,normalized=False,concept_wgt=1,include_date=False,date_wgt=1,date_max=None,min_events=5,events=None,verbose=False):
+    def CsrMatrix(self,out=None,normalized=False,concept_wgt=1,include_date=False,date_wgt=1,date_max=None,min_events=0,events=None,excluded_types = None):
         print("Building CSR matrix")
         if events is None:
             events = self.GetEvents()
         eventsConcepts = events["concepts"]  # get just the event concepts
+        if excluded_types is not None:
+            concepts = self.GetConcepts(index_col = 0)
         if include_date:
             eventDates=events["date"]
             dateMin=str_to_date(eventDates.min())
@@ -188,7 +191,7 @@ class EventRelationships:
             included=False
             #build csr vectors
             for id,score in conceptsList:
-                if min_events<2 or conceptCount[str(id)][1]>=min_events:
+                if (min_events<2 or conceptCount[str(id)][1]>=min_events) and (excluded_types is None or concepts.loc[id, :].type not in excluded_types):
                     included=True
                     index = vocabulary.setdefault(id,len(vocabulary))
                     indices.append(index)
@@ -214,13 +217,13 @@ class EventRelationships:
         if out is not None:
             save_sparse_csr(out,matrix)
             #save_as_json(vocabulary,os.path.join(self.data_subdir, out))
-        if verbose:
-            cc = ((len(indptr)-1)*len(vocabulary))/len(data) if len(indptr)-1>0 else 0
-            print("n samples: " + str(len(indptr)-1))
-            print("n dimensions: "+str(len(vocabulary)))
-            print("n excluded concepts: "+str(excluded_concepts))
-            print("n excluded events: "+str(excluded_events))
-            print("cover coeficient: "+str(cc))
+
+        cc = ((len(indptr)-1)*len(vocabulary))/len(data) if len(indptr)-1>0 else 0
+        print("n samples: " + str(len(indptr)-1))
+        print("n dimensions: "+str(len(vocabulary)))
+        print("n excluded concepts: "+str(excluded_concepts))
+        print("n excluded events: "+str(excluded_events))
+        print("cover coeficient: "+str(cc))
 
         return (matrix,vocabulary)
 
@@ -316,7 +319,7 @@ class EventRelationships:
 
             if n_clusters is not None:
                 labels = fcluster(z, n_clusters, criterion=criterion)
-                if(criterion=="dičstance"): print("N clusters: "+str(len(np.unique(labels))))
+                if(criterion=="distance"): print("N clusters: "+str(len(np.unique(labels))))
                 return z,labels
             else: return z
 
@@ -377,11 +380,15 @@ class EventRelationships:
 
     ### Dimensionality Reduction ######################################################################################################################
 
-    def TruncatedSVD(self,x,n_components = 2,algorithm = "randomized",n_iter = 5,random_state=None,tol=0.0):
+    def TruncatedSVD(self,x,n_components = 2,algorithm = "randomized",n_iter = 5,random_state=None,tol=0.0,out=None):
         print("TruncatedSVD")
         svd = TruncatedSVD(n_components=n_components,algorithm=algorithm, n_iter=n_iter, random_state=random_state,tol=tol)
         fitted = svd.fit_transform(x)
         print(svd.explained_variance_ratio_.sum())
+
+        if out is not None:
+            save_model(svd,out)
+
         return fitted,svd
 
     def PCA(self,x,n_components=None, copy=True, whiten=False, svd_solver="auto", tol=0.0, iterated_power="auto", random_state=None,verbose=False):
@@ -478,7 +485,7 @@ class EventRelationships:
 
             print("k")
 
-    def CrossValidateByCluster(self,date_start="2016-04-25",date_end="2016-05-01",min_score=0,n_clusters=500,n_dims=2000,window_size=14,verbose=True,separate=False,min_events=100,lazy=True):
+    def CrossValidateByCluster(self,date_start="2016-08-29",date_end="2016-09-11",min_score=0,n_clusters=1600,n_dims=1000,window_size=14,verbose=True,separate=False,min_events=10,lazy=True):
         from src.dset import Dset
 
         dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end)).tolist()
@@ -499,6 +506,7 @@ class EventRelationships:
         trainModel=None
         train_set=None
         clfs=None
+        tsvd=None
         for date in dateRange:
             #split dset by date
             date = date.strftime('%Y-%m-%d')
@@ -510,51 +518,62 @@ class EventRelationships:
                 train,test = self.TrainTestSplit(date)
 
             #create matrix and train clustering
-            trainMatrix,trainVocab=self.CsrMatrix(events=train,min_events=min_events,verbose=verbose)
+            trainMatrix,trainVocab=self.CsrMatrix(events=train,min_events=min_events)
             #trainMatrix, trainVocab = self.CsrMatrix(events=train,min_events=min_events,date_wgt=100,concept_wgt=100,normalized=True,include_date=True,verbose=verbose)
 
-            trainMatrixFull,tsvd = self.TruncatedSVD(trainMatrix, n_components=n_dims, random_state=self.seed, algorithm="randomized")
+            if not lazy or tsvd is None:
+                try:
+                    tsvd = load_model("tsvd" + date, enc=self.enc)
+                    trainMatrixFull = tsvd.transform(trainMatrix)
+                except FileNotFoundError:
+                    trainMatrixFull,tsvd = self.TruncatedSVD(trainMatrix, n_components=n_dims, random_state=self.seed, algorithm="randomized",out="tsvd"+date)
+            #else:
+            #    trainMatrixFull = tsvd.transform(trainMatrix)
+
 
             # cluster train set
             if not lazy or trainModel is None:
                 try:
-                    #trainModel=load_model("crossValClusterAgg"+date,enc=self.enc)
-                    trainModel=load_model("crossValCluster"+date,enc=self.enc)
-                    trainLabels=trainModel.labels_
+                    trainModel=load_model("scipyAgg"+date,enc=self.enc)
+                    #trainLabels=trainModel.labels_
+                    trainLabels = fcluster(trainModel, n_clusters, criterion="distance")
+                    print("n clusters:"+str(len(set(trainLabels))))
                 except FileNotFoundError:
-                    #trainModel,trainLabels= self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=False,nar=verbose,seed=1,verbose=False,out="crossValCluster"+date)
+                    #trainModel,trainLab els= self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=False,nar=verbose,seed=1,verbose=False,out="crossValCluster"+date)
                     #trainModel,trainLabels = self.AgglomerativeClustering(trainMatrix,n_clusters=n_clusters,out="crossValClusterAgg"+date)
-                    self.AgglomerativeClustering(trainMatrixFull, n_clusters=1000, affinity="euclidean", method="ward", out="scipy" + date, imp="scipy")
+                    trainModel, trainLabels = self.AgglomerativeClustering(trainMatrixFull, n_clusters=n_clusters, affinity="euclidean", method="ward", out="scipyAgg" + date, imp="scipy")
                 train["cluster"]=trainLabels
 
             # performance info
             #silhuette(trainMatrix,trainLabels)
-            self.ShowRelationships(None, "crossValClustering",train)
-            self.CountClusterSize(trainLabels,plot=False,events=train)
+            #self.ShowRelationships(None, "crossValClustering",train)
+            #self.CountClusterSize(trainLabels,plot=False,events=train)
 
             # build dataset
             if not lazy or train_set is None:
                 try:
                     train_set=load_model("dset"+date,self.enc)
-                except FileNotFoundError:
-                    train_set = Dset()
+                    train_set.Analyze()
+                except (FileNotFoundError,EOFError):
+                    train_set = Dset(min_events=min_events)
                     train_set.Compile(train,out="dset"+date)
 
             # train model
-            if lazy or clfs is None:
+            if not lazy or clfs is None:
                 try:
-                   clfs = load_model("crossValPred"+date,self.enc)
-                except FileNotFoundError:
-                    clfs=self.RandomForest(train_set.dset,random_state=1,n_estimators=10,bootstrap=True)#,out="crossValPred"+date)
-                    #clfs=self.NeuralNetwork(train_set.dset)
-                constantClfs=self.MultiLabelMostFrequent(train,n_labels=10,filter=list(train_set.yset[1].keys()))
+                    clfs = load_model("crossValPred"+date,self.enc)
+                except (FileNotFoundError,EOFError):
+                    #clfs=self.RandomForest(train_set,random_state=1,n_estimators=10,bootstrap=True,out="crossValPred"+date)
+                    #clfs=self.NeuralNetwork(train_set)
+                    clfs = self.OneVsRest(train_set,out="crossValPred"+date)
+                constantClfs=self.MultiLabelMostFrequent(train,n_labels=10,filter=list(train_set.yset.keys()))
 
             # cluster today's events
             today=test.loc[test.date==date]
             todayCsr=self.CsrFromVocab(trainVocab,today,verbose=verbose)
             knnModel = self.Clustering2KNN(train.cluster, trainMatrix)
             todayLabels=knnModel.predict(todayCsr)
-            todayLabels= trainModel.predict(todayCsr)
+            #todayLabels=trainModel.predict(todayCsr)
             today.loc[:,"cluster"]=todayLabels
 
             print("Building test set")
@@ -571,7 +590,7 @@ class EventRelationships:
 
             print("Predicting")
             train_x,test_y = test_set.ToArray()
-            train_x=tsvd.transform(train_x)
+            #train_x=tsvd.transform(train_x)
             train_y = clfs.predict(train_x)
             #train_y = bin_encode(clfs.predict(train_x),limit=0.1)
             constant_train_y = self.MLMFPredict(constantClfs, test_set.yset)
@@ -603,8 +622,8 @@ class EventRelationships:
             print("precision_recall_fscore_support for " + date + " is " + str(prfs))
 
             print("Constant Hamming score for " + date + " is " + str(constantHammingScore))
-            print("Hammming loss score for " + date + " is " + str(hammingLoss))
-            print("precision_recall_fscore_support for " + date + " is " + str(prfs))
+            print("Hammming loss score for " + date + " is " + str(constantHammingLoss))
+            print("precision_recall_fscore_support for " + date + " is " + str(constantPrfs))
 
             if lazy:
                 train = train.append(today,ignore_index=True)
@@ -625,12 +644,22 @@ class EventRelationships:
 
     ### Multi-label prediction ######################################################################################################################
 
+    def OneVsRest(self,dset,out=None):
+        print("OneVsRest")
+        x,y = dset.ToArray()
+        model = OneVsRestClassifier(LinearSVC())
+        model.fit(x,y)
+
+        if out is not None:
+            save_model(model,out)
+
+        return model
+
     # random forest prediction
-    def RandomForest(self, dset,n_estimators=10, criterion="gini", max_depth=None, min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0, max_features="auto", max_leaf_nodes=None, min_impurity_decrease=0.0, min_impurity_split=None, bootstrap=True, oob_score=False, n_jobs=1, random_state=None, verbose=0, warm_start=False, class_weight=None,dim_red=False,dim_red_model=None,out=None):
+    def RandomForest(self, dset,n_estimators=10, criterion="gini", max_depth=None, min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0, max_features="auto", max_leaf_nodes=None, min_impurity_decrease=0.0, min_impurity_split=None, bootstrap=True, oob_score=False, n_jobs=1, random_state=None, verbose=0, warm_start=False, class_weight=None,out=None):
         print("Training random forest")
 
-        x = np.asarray(list(dset[0].values()), dtype=int).T
-        y = np.asarray(list(dset[1].values()), dtype=int).T
+        x,y = dset.ToArray()
         model = RandomForestClassifier(n_estimators=n_estimators, criterion=criterion, max_depth=max_depth,
                                        min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf,
                                        min_weight_fraction_leaf=min_weight_fraction_leaf, max_features=max_features,
@@ -638,21 +667,11 @@ class EventRelationships:
                                        min_impurity_split=min_impurity_split, bootstrap=bootstrap,
                                        oob_score=oob_score, n_jobs=n_jobs, random_state=random_state,
                                        verbose=verbose, warm_start=warm_start, class_weight=class_weight)
-        if dim_red:
-            if dim_red_model is None:
-                reduced,pcaModel = self.PCA(x,n_components=100)
-            else:
-                reduced = dim_red_model.transform(x)
-            model.fit(reduced, y)
-            if out is not None:
-                save_model(model,out)
-                save_model(pcaModel, out)
-            return model,pcaModel
-        else:
-            model.fit(x, y)
-            if out is not None:
-                save_model(model,out)
-            return model
+
+        model.fit(x, y)
+        if out is not None:
+            save_model(model,out)
+        return model
 
     def MultiLabelMostFrequent(self, events, n_labels=10,min_score=0,filter=None):
         print("Training most frequent classfier")
@@ -755,9 +774,7 @@ class EventRelationships:
         from keras.layers import Dense
         print("Training neural network")
 
-        x = np.asarray(list(dset[0].values()), dtype=int).T
-        y = np.asarray(list(dset[1].values()), dtype=int).T
-        print(x.shape)
+        x,y = dset.ToArray()
         nn = Sequential()
         nn.add(Dense(x.shape[1], activation="relu", input_shape=(x.shape[1],)))
         nn.add(Dense(y.shape[1], activation="sigmoid"))
@@ -901,13 +918,50 @@ class EventRelationships:
             test.to_csv(os.path.join(self.data_subdir, self.events_filename) + "_test.csv",sep=self.sep,index=False,encoding=self.enc)
         return train,test
 
+    #average of average distances within clusters/average of average distances within clusters in chronological order
+    def AverageChronologicalLinkage(self,events,metric="euclidean"):
+        from sklearn.metrics import pairwise
+        csr, vocab = self.CsrMatrix(events=events)
+        matrix = csr.toarray()
+        chrons=0
+        nc=0
+        for _,cluster in events.groupby("cluster"):
+            rows = [(x[1] if type(x) is tuple else x) for x in cluster.index.values]
+            n=len(rows)
+            if n <= 1:
+                #print("n==1, skipping")
+                continue
+            clusterArray = matrix[rows,]
+            try:
+                distances = pairwise.pairwise_distances(clusterArray,metric = metric)
+            except Exception as e:
+                continue
+            chronAvg = 0
+            normAvg = 0
+            for i,eventDistances in enumerate(distances):
+                if i>0:
+                    chronAvg+=eventDistances[i-1]
+                    normAvg+=sum(eventDistances[:i])
+            chronAvg/=n-1
+            normAvg/=(((n-1)*n)/2)
+            chron = (normAvg/chronAvg)-1
+            #print("chron: "+str(chron))
+            chrons+=chron
+            #chrons+=chronAvg
+            nc+=1
+        avgChron = chrons/nc
+        #print("avg chron: "+str(avgChron))
+        return avgChron
+
+
+
     #optimize a clustering algorithm using silhouette score
-    def Cluster(self, events=None, min=50, max=2000, step=50, min_events=0,out=None,eval=True, date = "2016-04-25"):
+    def Cluster(self, events=None, min=1000, max=2000, step=100, min_events=0,out=None,eval=True, date = "2016-04-25",plot=True):
         if events is None:
             events = self.GetEvents()
         if date is not None:
             events,test = self.TrainTestSplit(date)
-        matrix, vocab = self.CsrMatrix(events=events, min_events=min_events, verbose=True)
+        matrix, vocab = self.CsrMatrix(events=events, min_events=min_events)
         #matrix, vocab = self.CsrMatrix(events=events,min_events=min_events,date_wgt=100,concept_wgt=100,normalized=True,include_date=True,verbose=True)
         #fitted,model = self.TruncatedSVD(matrix,n_components=2000,random_state=self.seed,algorithm="randomized")
         #save_model(fitted,"scipyFitted"+date)
@@ -918,10 +972,9 @@ class EventRelationships:
         bestModel=None
         scores = []
         clusters = []
-        #model = self.AgglomerativeClustering(fitted, n_clusters=None, affinity="euclidean", method="ward",caching_dir="hierarichal_caching_dir",out="scipy"+date, imp="scipy")
+        #model = self.AgglomerativeClustering(fitted, n_clusters=None, affinity="euclidean", method="ward",caching_dir="hierarichal_caching_dir",out="scipyAgg"+date, imp="scipy")
+        model = load_model("scipyAgg"+date, self.enc)
         #self.ShowDendrogram(model,p=500)
-        model = load_model("scipy"+date, self.enc)
-
 
         for i in range(min, max, step):
             #n_clusters=2**i
@@ -929,17 +982,20 @@ class EventRelationships:
             n_clusters=i
             print("n-clusters: "+str(n_clusters))
 
-            #model, labels = self.KMeans(fitted, n_clusters, useMiniBatchKMeans=True, seed=self.seed, verbose=False)
+            #model, labels = self.KMeans(fitted, n_clusters, useMiniBatchKMeans=False, seed=self.seed, verbose=False)
             #model,labels = self.CosineKmeans(matrix,n_clusters)
             #model,labels = self.AgglomerativeClustering(fitted,n_clusters=n_clusters,affinity="cosine",method="single",caching_dir="hierarichal_caching_dir")
             #model,labels = self.DBSCAN(matrix,n_clusters)
 
             labels = fcluster(model, n_clusters, criterion="distance")
+            print("n clusters: "+str(len(set(labels))))
 
+            #self.ShowRelationships(labels, "chron1400aggClust2016-04-25",events)
             if eval:
                 try:
                     print("scoring...")
-                    score=silhouette_score(fitted, labels, metric="euclidean", sample_size=1000, random_state=self.seed)
+                    #score=silhouette_score(matrix.toarray(), labels, metric="euclidean",sample_size=1000, random_state=self.seed)
+                    score = self.AverageChronologicalLinkage(self.GetClusters(labels,events,inplace=False))
                     #score = calinski_harabaz_score(matrix.toarray(),labels)
                     #score, coph_dists = cophenet(model, pdist(fitted))
                     print("score: " + str(score))
@@ -958,10 +1014,11 @@ class EventRelationships:
         if out is not None:
             save_model(bestModel,out)
 
-        #plt.plot(clusters,scores)
-        #plt.ylabel("score")
-        #plt.xlabel("n_clusters")
-        #plt.show()
+        if plot:
+            plt.plot(clusters,scores)
+            plt.ylabel("score")
+            plt.xlabel("n_clusters")
+            plt.show()
 
     # write all the clusters to a file in a human readable format
     def ShowRelationships(self,labels,out,events):
@@ -1106,7 +1163,7 @@ class EventRelationships:
             date = event.date
             conceptsList = ast.literal_eval(event.concepts)
             for id,score in conceptsList:
-                heatmap[date][id] += score
+                heatmap[date][id] += 1
 
         df = pd.DataFrame.from_dict(heatmap)
         if out is not None:
@@ -1267,6 +1324,23 @@ class EventRelationships:
             plt.xlim(0, len(h)-2 )
         plt.legend(loc='upper right')
         plt.show()
+
+    def PlotConceptTypes(self):
+        events = self.GetEvents()
+        concepts = self.GetConcepts(index_col=0)
+        data = OrderedDict({"wiki":0,"loc":0,"org":0,"person":0})
+        #for _,event in events.iterrows():
+        #    cpts = string_to_object(event.concepts)
+        #    for id,score in cpts:
+        #        ctype = concepts.loc[id, :].type
+        #        data[ctype] +=1
+
+        for _,concept in concepts.iterrows():
+            ctype = concept.type
+            data[ctype] +=1
+
+        self.Plot(list(data.values()),x_labels=list(data.keys()))
+
 
 
     ### Data Analysis #########################################################################################################################

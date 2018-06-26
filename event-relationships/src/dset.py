@@ -9,29 +9,35 @@ import pandas as pd
 class Dset(EventRelationships):
     excluded_types = {"loc", "person", "org"}
     min_score=0
-    min_events=100
+    min_events=0
+    n_dims=1000
     predict="concepts"
     window_size=14
+    tsvd=None
+    redx=None
 
-    def __init__(self, train_set=None):
+    def __init__(self, train_set=None,min_events=None):
         if train_set is None:
             self.xset = OrderedDict()
             self.yset = OrderedDict()
             self.concepts = self.GetConcepts(index_col=0)
             self.conceptCount = self.GetConceptCount()
             self.add_keys=True
+            if min_events is not None: self.min_events=min_events
         else:
             self.xset = OrderedDict({key: [] for key in list(train_set.xset.keys())})
             self.yset = OrderedDict({key: [] for key in list(train_set.yset.keys())})
             self.concepts = train_set.concepts
             self.conceptCount = train_set.conceptCount
             self.add_keys=False
+            self.tsvd=train_set.tsvd
+            self.min_events = train_set.min_events
 
         self.dsets={DsetAxis.X : self.xset, DsetAxis.Y: self.yset}
         self.dset=(self.xset, self.yset)
         self.nsamples=0
 
-    def Compile(self,events,out=None):
+    def Compile(self,events,out=None,dimred=True):
         print("Making dataset: ")
         for _,cluster in events.groupby("cluster"):
             dateMin = str_to_date(cluster.date.min())
@@ -55,6 +61,8 @@ class Dset(EventRelationships):
 
         self.Analyze()
 
+        #self.ToArray(dimred=True) #force it to build dimred before saving
+
         if out is not None:
             save_model(self, out)
 
@@ -72,7 +80,7 @@ class Dset(EventRelationships):
     def Append(self,event,axis):
         conceptList = string_to_object(event.concepts)
         for id, score in conceptList:
-            if score >= self.min_score and self.concepts.loc[id, :].type not in self.excluded_types and self.conceptCount[str(id)][1] >= self.min_events:
+            if score >= self.min_score and self.concepts.loc[id, :].type not in self.excluded_types and (axis==DsetAxis.X or self.conceptCount[str(id)][1] >= self.min_events):
                 if id in self.dsets[axis]:
                     self.dsets[axis][id][self.nsamples-1]=1
                 elif self.add_keys:
@@ -89,7 +97,7 @@ class Dset(EventRelationships):
 
     def Analyze(self):
         print("dset analysis: ")
-        x,y = self.ToArray()
+        x,y = self.ToArray(dimred=False)
         print("n features: " + str(x.shape[1]))
         print("n classes: " + str(y.shape[1]))
         print("n samples: " + str(self.nsamples))
@@ -97,13 +105,22 @@ class Dset(EventRelationships):
         print("y % full: " + str((np.count_nonzero(y) / y.size) * 100))
 
     def SaveArray(self):
-        x,y=self.ToArray()
+        x,y=self.ToArray(dimred=False)
         np.savetxt(os.path.join(self.temp_subdir, "_x") + ".txt", x, delimiter=self.sep,header=self.sep.join(map(str, list(self.xset.keys()))), fmt="%d")
         np.savetxt(os.path.join(self.temp_subdir, "_y") + ".txt", y, delimiter=self.sep,header=self.sep.join(map(str, list(self.yset.keys()))), fmt="%d")
 
-    def ToArray(self):
+    def ToArray(self,dimred=False):
         x = np.asarray(list(self.xset.values()), dtype=int).T
         y = np.asarray(list(self.yset.values()), dtype=int).T
+
+        if dimred:
+            if self.redx is None:
+                if self.tsvd is None:
+                    self.redx,self.tsvd = self.TruncatedSVD(x,n_components=self.n_dims)
+                else:
+                    self.redx = self.tsvd.transform(x)
+            return self.redx,y
+
         return x,y
 
     def GetKeys(self,axis):
