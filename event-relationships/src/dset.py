@@ -9,14 +9,15 @@ import pandas as pd
 class Dset(EventRelationships):
     excluded_types = {"loc", "person", "org"}
     min_score=0
-    min_events=0
+    min_events=100
     n_dims=1000
     predict="concepts"
     window_size=14
+    y_window_size = 7
     tsvd=None
     redx=None
 
-    def __init__(self, train_set=None,min_events=None):
+    def __init__(self, train_set=None,min_events=None,window_size=None):
         if train_set is None:
             self.xset = OrderedDict()
             self.yset = OrderedDict()
@@ -24,6 +25,7 @@ class Dset(EventRelationships):
             self.conceptCount = self.GetConceptCount()
             self.add_keys=True
             if min_events is not None: self.min_events=min_events
+            if window_size is not None: self.window_size = window_size
         else:
             self.xset = OrderedDict({key: [] for key in list(train_set.xset.keys())})
             self.yset = OrderedDict({key: [] for key in list(train_set.yset.keys())})
@@ -32,12 +34,13 @@ class Dset(EventRelationships):
             self.add_keys=False
             self.tsvd=train_set.tsvd
             self.min_events = train_set.min_events
+            self.window_size = train_set.window_size
 
         self.dsets={DsetAxis.X : self.xset, DsetAxis.Y: self.yset}
         self.dset=(self.xset, self.yset)
         self.nsamples=0
 
-    def Compile(self,events,out=None,dimred=True):
+    def Compile(self,events,out=None):
         print("Making dataset: ")
         for _,cluster in events.groupby("cluster"):
             dateMin = str_to_date(cluster.date.min())
@@ -51,7 +54,8 @@ class Dset(EventRelationships):
             while (endDate <= dateMax):
                 xCond = np.logical_and(dates >= startDate, dates < endDate)
                 xWindow = cluster.loc[xCond]
-                yCond = dates == endDate
+                #yCond = dates == endDate
+                yCond = np.logical_and(dates >= endDate, dates < (endDate + timedelta(days=self.y_window_size)))
                 yWindow = cluster.loc[yCond]
 
                 self.Concat(xWindow,yWindow)
@@ -67,7 +71,9 @@ class Dset(EventRelationships):
             save_model(self, out)
 
     def Concat(self,xevents,yevents):
-        if (xevents.size == 0 or yevents.size == 0): return
+        if (xevents.size == 0 or yevents.size == 0):
+            print("no events in x or y, skipping...")
+            return
 
         self.nsamples+=1
 
@@ -80,7 +86,7 @@ class Dset(EventRelationships):
     def Append(self,event,axis):
         conceptList = string_to_object(event.concepts)
         for id, score in conceptList:
-            if score >= self.min_score and self.concepts.loc[id, :].type not in self.excluded_types and (axis==DsetAxis.X or self.conceptCount[str(id)][1] >= self.min_events):
+            if self.concepts.loc[id, :].type not in self.excluded_types and self.conceptCount[str(id)][1] >= self.min_events:
                 if id in self.dsets[axis]:
                     self.dsets[axis][id][self.nsamples-1]=1
                 elif self.add_keys:

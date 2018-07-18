@@ -391,14 +391,16 @@ class EventRelationships:
 
         return fitted,svd
 
-    def PCA(self,x,n_components=None, copy=True, whiten=False, svd_solver="auto", tol=0.0, iterated_power="auto", random_state=None,verbose=False):
+    def PCA(self,x,n_components=None, copy=True, whiten=False, svd_solver="auto", tol=0.0, iterated_power="auto", random_state=None,out=None):
         from sklearn.decomposition import PCA
         print("pca")
         pca = PCA(n_components=n_components, copy=copy, whiten=whiten, svd_solver=svd_solver, tol=tol, iterated_power=iterated_power, random_state=random_state)
         fitted=pca.fit_transform(x)
-        #print(pca.explained_variance_ratio_)
         print(pca.explained_variance_ratio_.sum())
-        #print(pca.singular_values_)
+
+        if out is not None:
+            save_model(pca,out)
+
         return fitted,pca
 
     # deprecated
@@ -485,10 +487,10 @@ class EventRelationships:
 
             print("k")
 
-    def CrossValidateByCluster(self,date_start="2016-08-29",date_end="2016-09-11",min_score=0,n_clusters=1600,n_dims=1000,window_size=14,verbose=True,separate=False,min_events=10,lazy=True):
+    def CrossValidateByCluster(self,date_start="2016-08-28",date_end="2016-12-31",n_clusters=300,n_dims=2000,window_size=30,y_window_size=7,verbose=True,separate=False,min_events=5,lazy=True):
         from src.dset import Dset
 
-        dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end)).tolist()
+        dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end),freq="W").tolist()
 
         hammingScores=[]
         hammingLossScores=[]
@@ -536,7 +538,7 @@ class EventRelationships:
                 try:
                     trainModel=load_model("scipyAgg"+date,enc=self.enc)
                     #trainLabels=trainModel.labels_
-                    trainLabels = fcluster(trainModel, n_clusters, criterion="distance")
+                    trainLabels = fcluster(trainModel, n_clusters, criterion="maxclust")
                     print("n clusters:"+str(len(set(trainLabels))))
                 except FileNotFoundError:
                     #trainModel,trainLab els= self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=False,nar=verbose,seed=1,verbose=False,out="crossValCluster"+date)
@@ -552,41 +554,45 @@ class EventRelationships:
             # build dataset
             if not lazy or train_set is None:
                 try:
-                    train_set=load_model("dset"+date,self.enc)
+                    train_set=load_model("30dset"+date,self.enc)
                     train_set.Analyze()
                 except (FileNotFoundError,EOFError):
-                    train_set = Dset(min_events=min_events)
-                    train_set.Compile(train,out="dset"+date)
+                    train_set = Dset()
+                    train_set.Compile(train,out="30dset"+date)
 
             # train model
             if not lazy or clfs is None:
                 try:
-                    clfs = load_model("crossValPred"+date,self.enc)
+                    #clfs = load_model("crossValPredRandomForest"+date,self.enc)
+                    clfs = load_model("crossValPredOneVsRest30"+date,self.enc)
                 except (FileNotFoundError,EOFError):
-                    #clfs=self.RandomForest(train_set,random_state=1,n_estimators=10,bootstrap=True,out="crossValPred"+date)
+                    #clfs=self.RandomForest(train_set,random_state=self.seed,n_estimators=10,bootstrap=True,out="crossValPredRandomForest"+date)
                     #clfs=self.NeuralNetwork(train_set)
-                    clfs = self.OneVsRest(train_set,out="crossValPred"+date)
-                constantClfs=self.MultiLabelMostFrequent(train,n_labels=10,filter=list(train_set.yset.keys()))
+                    #clfs=self.BP_MLL(train_set,out="crossValBPMLL"+date)
+                    clfs = self.OneVsRest(train_set,out="crossValPredOneVsRest30"+date)
+                constantClfs=self.MultiLabelMostFrequent(train,n_labels=50,filter=list(train_set.yset.keys()))
 
             # cluster today's events
-            today=test.loc[test.date==date]
-            todayCsr=self.CsrFromVocab(trainVocab,today,verbose=verbose)
+            testDates = pd.to_datetime(test.date)
+            testCond = np.logical_and(testDates >= str_to_date(date), testDates < (str_to_date(date) + timedelta(days=y_window_size)))
+            current=test.loc[testCond]
+            currentCsr=self.CsrFromVocab(trainVocab,current)
             knnModel = self.Clustering2KNN(train.cluster, trainMatrix)
-            todayLabels=knnModel.predict(todayCsr)
-            #todayLabels=trainModel.predict(todayCsr)
-            today.loc[:,"cluster"]=todayLabels
+            currentLabels=knnModel.predict(currentCsr)
+            #currentLabels=trainModel.predict(todayCsr)
+            current.loc[:,"cluster"]=currentLabels
 
             print("Building test set")
             test_set = Dset(train_set)
-            for todayLabel in set(todayLabels):
-                trainCluster=train.loc[train.cluster==todayLabel]
-                todayCluster=today.loc[today.cluster==todayLabel]
+            for currentLabel in set(currentLabels):
+                trainCluster=train.loc[train.cluster==currentLabel]
+                currentCluster=current.loc[current.cluster==currentLabel]
 
                 startDate = (str_to_date(date) - timedelta(days=window_size)).strftime('%Y-%m-%d')
                 cond = np.logical_and(trainCluster.date>=startDate, trainCluster.date<date)
-                todayTrainCluster=trainCluster.loc[cond]
+                currentTrainCluster=trainCluster.loc[cond]
 
-                test_set.Concat(todayTrainCluster,todayCluster)
+                test_set.Concat(currentTrainCluster,currentCluster)
 
             print("Predicting")
             train_x,test_y = test_set.ToArray()
@@ -626,7 +632,7 @@ class EventRelationships:
             print("precision_recall_fscore_support for " + date + " is " + str(constantPrfs))
 
             if lazy:
-                train = train.append(today,ignore_index=True)
+                train = train.append(current,ignore_index=True)
                 train_set.Merge(test_set)
 
         # final average scores
@@ -643,6 +649,29 @@ class EventRelationships:
         print("Mean constant Fscore score: "+ str(np.mean(constantFscoreScores)))
 
     ### Multi-label prediction ######################################################################################################################
+
+    def BP_MLL(self,dset,out=None):
+        from src.bp_mll import bp_mll_loss
+        import tensorflow as tf
+
+        print("Training BP-MLL")
+        x,y = dset.ToArray()
+        n = x.shape[0]
+        dim_no = x.shape[1]
+        class_no = y.shape[1]
+        # create simple mlp
+        model = tf.keras.models.Sequential([
+            tf.keras.layers.Dense(256,activation="relu",input_shape=(dim_no,),kernel_initializer="glorot_uniform"),
+            tf.keras.layers.Dense(128,activation="relu",kernel_initializer="glorot_uniform"),
+            tf.keras.layers.Dense(class_no, activation="sigmoid", kernel_initializer="glorot_uniform")
+        ])
+        model.compile(optimizer="adam",loss=bp_mll_loss,metrics=["accuracy"])
+        model.fit(x, y, epochs=100,verbose=True)
+
+        if out is not None:
+            save_model(model,out)
+
+        return model
 
     def OneVsRest(self,dset,out=None):
         print("OneVsRest")
@@ -919,10 +948,8 @@ class EventRelationships:
         return train,test
 
     #average of average distances within clusters/average of average distances within clusters in chronological order
-    def AverageChronologicalLinkage(self,events,metric="euclidean"):
+    def AverageChronologicalLinkage(self,events,matrix,metric="euclidean"):
         from sklearn.metrics import pairwise
-        csr, vocab = self.CsrMatrix(events=events)
-        matrix = csr.toarray()
         chrons=0
         nc=0
         for _,cluster in events.groupby("cluster"):
@@ -954,19 +981,21 @@ class EventRelationships:
         return avgChron
 
 
-
     #optimize a clustering algorithm using silhouette score
-    def Cluster(self, events=None, min=1000, max=2000, step=100, min_events=0,out=None,eval=True, date = "2016-04-25",plot=True):
+    def Cluster(self, events=None, min=50, max=10000, step=50, min_events=5,out=None,eval=True, date = "2016-08-28",plot=True):
         if events is None:
             events = self.GetEvents()
         if date is not None:
             events,test = self.TrainTestSplit(date)
         matrix, vocab = self.CsrMatrix(events=events, min_events=min_events)
         #matrix, vocab = self.CsrMatrix(events=events,min_events=min_events,date_wgt=100,concept_wgt=100,normalized=True,include_date=True,verbose=True)
-        #fitted,model = self.TruncatedSVD(matrix,n_components=2000,random_state=self.seed,algorithm="randomized")
-        #save_model(fitted,"scipyFitted"+date)
-        fitted = load_model("scipyFitted" + date, self.enc)
-        #matrix = csr_matrix(fitted)
+
+        #fitted,tsvd = self.TruncatedSVD(matrix,n_components=2000,random_state=self.seed,algorithm="randomized",out="tsvd"+date)
+        tsvd = load_model("tsvd" + date, self.enc)
+        fitted=tsvd.transform(matrix)
+        print(tsvd.explained_variance_ratio_.sum())
+        #self.Plot(np.cumsum(tsvd.explained_variance_ratio_))
+
         bestClusters=0
         bestScore=-1
         bestModel=None
@@ -987,15 +1016,15 @@ class EventRelationships:
             #model,labels = self.AgglomerativeClustering(fitted,n_clusters=n_clusters,affinity="cosine",method="single",caching_dir="hierarichal_caching_dir")
             #model,labels = self.DBSCAN(matrix,n_clusters)
 
-            labels = fcluster(model, n_clusters, criterion="distance")
+            labels = fcluster(model, n_clusters, criterion="maxclust")
             print("n clusters: "+str(len(set(labels))))
 
             #self.ShowRelationships(labels, "chron1400aggClust2016-04-25",events)
             if eval:
                 try:
                     print("scoring...")
-                    #score=silhouette_score(matrix.toarray(), labels, metric="euclidean",sample_size=1000, random_state=self.seed)
-                    score = self.AverageChronologicalLinkage(self.GetClusters(labels,events,inplace=False))
+                    score=silhouette_score(fitted, labels, metric="euclidean",sample_size=10000,random_state=self.seed)
+                    #score = self.AverageChronologicalLinkage(self.GetClusters(labels,events,inplace=False),fitted)
                     #score = calinski_harabaz_score(matrix.toarray(),labels)
                     #score, coph_dists = cophenet(model, pdist(fitted))
                     print("score: " + str(score))
@@ -1017,7 +1046,7 @@ class EventRelationships:
         if plot:
             plt.plot(clusters,scores)
             plt.ylabel("score")
-            plt.xlabel("n_clusters")
+            plt.xlabel("distance")
             plt.show()
 
     # write all the clusters to a file in a human readable format
@@ -1170,9 +1199,8 @@ class EventRelationships:
             df.to_csv(os.path.join(self.data_subdir,out)+".csv",sep=self.sep,na_rep=0,encoding=self.enc)
         return df
 
-    def CsrFromVocab(self,vocab,events,concept_wgt=100,date_wgt=5000,include_date=False,verbose=False):
-        if verbose:
-            print("Making CSR Matrix from input vocab")
+    def CsrFromVocab(self,vocab,events,concept_wgt=1,date_wgt=5000,include_date=False,normalize=False):
+        print("Making CSR Matrix from input vocab")
         indptr = [0]
         indices = []
         data = []
@@ -1183,7 +1211,7 @@ class EventRelationships:
                 if id in vocab:
                     index = vocab[id]
                     indices.append(index)
-                    score = normalize(score,0,100)
+                    if normalize: score = normalize(score,0,100)
                     data.append(score*concept_wgt)
 
             #include date dimension
@@ -1210,14 +1238,18 @@ class EventRelationships:
     ### Data Visualisation #########################################################################################################################
 
     # plot data
-    def Plot(self, vals, type="bar", x_labels=None):
+    def Plot(self, vals, type="bar", x_labels=None,title=None,xLabel=None,yLabel=None):
         if type.lower()=="bar":
             fig, ax = plt.subplots()
             ax.bar(range(len(vals)), vals, align="center")
             if x_labels is not None:
-                ax.set_xticks(range(len(vals)))
+                #ax.set_xticks(np.arange(0,len(x_labels)*10,step=10))
+                ax.set_xticks(range(len(x_labels)))
                 plt.xticks(rotation=90)
                 ax.set_xticklabels(x_labels)
+            if title is not None: plt.title(title)
+            if xLabel is not None: plt.xlabel(xLabel)
+            if yLabel is not None: plt.ylabel(yLabel)
         elif type.lower()=="line":
             plt.plot(vals)
         plt.show()
@@ -1303,11 +1335,15 @@ class EventRelationships:
         dateRange = pd.date_range(dateMin, dateMax).tolist()
         dates=pd.to_datetime(events.date)
         counts = []
+        x_labels = []
+        i=0
         for date in dateRange:
             cond = (dates == date).values
             counts.append(sum(cond))
+            if i%10==0: x_labels.append(date_to_str(date))
+            i+=1
 
-        self.Plot(counts,x_labels=dateRange)
+        self.Plot(counts,x_labels=x_labels,title="Št. dogodkov na dan",xLabel="Datum",yLabel="Št. dogodkov")
 
     def PlotDistribution(self,y):
         size = len(y)
@@ -1326,7 +1362,6 @@ class EventRelationships:
         plt.show()
 
     def PlotConceptTypes(self):
-        events = self.GetEvents()
         concepts = self.GetConcepts(index_col=0)
         data = OrderedDict({"wiki":0,"loc":0,"org":0,"person":0})
         #for _,event in events.iterrows():
@@ -1339,9 +1374,7 @@ class EventRelationships:
             ctype = concept.type
             data[ctype] +=1
 
-        self.Plot(list(data.values()),x_labels=list(data.keys()))
-
-
+        self.Plot(list(data.values()),x_labels=["Pojem","Lokacija","Organziacija","Oseba"],title="Število različnih konceptov po kategorijah",xLabel="Tip koncepta",yLabel="Št. različnih konceptov")
 
     ### Data Analysis #########################################################################################################################
 
