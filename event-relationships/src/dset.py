@@ -1,8 +1,8 @@
 from collections import OrderedDict
 import numpy as np
 import os.path
-from src.helpers import *
-from src.eventrelationships import EventRelationships
+from helpers import *
+from eventrelationships import *
 from enum import Enum
 import pandas as pd
 

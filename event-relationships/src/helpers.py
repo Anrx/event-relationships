@@ -3,7 +3,6 @@ from scipy.sparse import csr_matrix
 from sklearn import metrics
 from bisect import bisect_left
 from datetime import date
-from scipy.stats import threshold
 import os.path
 import pickle
 import json
@@ -101,8 +100,7 @@ def sigmoid(z):
     return [1 / (1 + math.exp(-n)) for n in z]
 
 def bin_encode(x,limit=0.5):
-    x=threshold(x,threshmin=limit,newval=0)
-    x=threshold(x,threshmax=limit,newval=1)
+    x=np.clip(x,a_min=limit,a_max=0.5)
     return x
 
 def string_to_object(x):

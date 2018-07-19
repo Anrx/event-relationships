@@ -1,7 +1,7 @@
-from src.eventrelationships import *
-from src.Kmeans import *
-from src.helpers import *
-from src.erinterface import *
+from eventrelationships import *
+from Kmeans import *
+from helpers import *
+from erinterface import *
 
 if __name__ == '__main__':
 ### generate dataset ######################################################################################################################

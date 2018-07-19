@@ -18,13 +18,12 @@ from sklearn.metrics import classification_report
 from sklearn.metrics import calinski_harabaz_score
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.svm import LinearSVC
-from mlxtend.frequent_patterns import apriori
 from sklearn.model_selection import train_test_split
 from scipy.cluster.hierarchy import dendrogram, linkage, cophenet, fcluster
 from scipy.spatial.distance import pdist
 from collections import OrderedDict
-from src.helpers import *
-from src.apriori import *
+from helpers import *
+from apriori import *
 from datetime import date,timedelta
 from collections import defaultdict
 from itertools import islice
@@ -488,7 +487,7 @@ class EventRelationships:
             print("k")
 
     def CrossValidateByCluster(self,date_start="2016-08-28",date_end="2016-12-31",n_clusters=300,n_dims=2000,window_size=30,y_window_size=7,verbose=True,separate=False,min_events=5,lazy=True):
-        from src.dset import Dset
+        from dset import Dset
 
         dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end),freq="W").tolist()
 

@@ -1,5 +1,5 @@
-from src.eventrelationships import EventRelationships
-from src.helpers import *
+from eventrelationships import EventRelationships
+from helpers import *
 from eventregistry import *
 import pandas as pd
 import csv
