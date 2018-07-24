@@ -108,14 +108,14 @@ if __name__ == '__main__':
 
 
 ### random forest prediction ######################################################################################################################
-    er = EventRelationships()
+    #er = EventRelationships()
     #date = "2016-04-25"
     #train, test = er.TrainTestSplit(date)
     #trainModel = load_model("scipy" + date, enc=er.enc)
     #trainLabels = fcluster(trainModel, 1000, criterion="distance")
     #clusters = er.GetClusters(trainLabels,train)
     #er.AverageChronologicalLinkage(clusters)
-    er.CrossValidateByCluster()
+    #er.CrossValidateByCluster()
     #er.Cluster()
     #er.PlotEventDateRange()
     #er.PlotConceptTypes()
@@ -151,8 +151,7 @@ if __name__ == '__main__':
     #er.Plot(v[:50],x_labels=n[:50])
 
     #trainMatrix, trainVocab = er.CsrMatrix(min_events=50, verbose=True)
-    #trainModel, trainLabels = er.KMeans(trainMatrix, 1000, useMiniBatchKMeans=True, nar=True,
-    #                                    out="MiniBatchKMeans_1000_min5_train_cluster538")
+    #trainModel, trainLabels = er.KMeans(trainMatrix, 1000, useMiniBatchKMeans=True, nar=True,out="MiniBatchKMeans_1000_min5_train_cluster538")
     #train["cluster"] = trainLabels
     #er.CountClusterSize(model.labels_)
     #er.ShowRelationships(model.labels_, "MiniBatchKMeans_1000_min5_train_cluster538", train)
@@ -176,3 +175,33 @@ if __name__ == '__main__':
     #er.PlotDistribution(cccounts)
 
     #er.PlotEventDateRange()
+
+
+### work
+
+    er = EventRelationships()
+    #er.Cluster()
+    er.CrossValidateByCluster()
+    #results = []
+    #constantResults = []
+    #for i in range(10,300,10):
+    #    res = er.CrossValidateByCluster(n_trees=i)
+    #    results.append(res[0])
+    #    constantResults.append(res[1])
+    #resPlot=np.concatenate(results,axis=1)
+    #constantResPLot = np.concatenate(constantResults,axis=1)
+    #np.savetxt("14dRandomForest10-300Trees100cGini2016-8-28",resPlot,delimiter=er.sep,encoding=er.enc)
+    #np.savetxt("14dRandomForest10-300Trees100cGini2016-8-28",constantResPLot,delimiter=er.sep,encoding=er.enc)
+    #plt.style.use("ggplot")
+    #xvals=np.arange(0,500,10)
+    #plt.plot(xvals,resPlot[:0],"g",label="Točnost")
+    #plt.plot(xvals,resPlot[:1],"r",label="Točnost")
+    #plt.plot(xvals,resPlot[:2],"y",label="Točnost")
+    #plt.plot(xvals,resPlot[:3],"b",label="Točnost")
+    #plt.plot(xvals,resPlot[:4],"k",label="Točnost")
+
+    #plt.title()
+    #plt.ylabel("Ocena")
+    #plt.xlabel("Število dreves")
+
+

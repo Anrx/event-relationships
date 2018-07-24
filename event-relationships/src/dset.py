@@ -130,7 +130,10 @@ class Dset(EventRelationships):
         return x,y
 
     def GetKeys(self,axis):
-        return self.dsets[axis].keys();
+        return self.dsets[axis].keys()
+
+    def GetFeatureNames(self,axis):
+        keys = self.GetKeys(axis)
 
 class DsetAxis(Enum):
     X=0

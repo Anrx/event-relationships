@@ -18,6 +18,7 @@ from sklearn.metrics import classification_report
 from sklearn.metrics import calinski_harabaz_score
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.svm import LinearSVC
+from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.model_selection import train_test_split
 from scipy.cluster.hierarchy import dendrogram, linkage, cophenet, fcluster
 from scipy.spatial.distance import pdist
@@ -40,6 +41,9 @@ import gc
 import pickle
 import os.path
 import matplotlib.pyplot as plt
+from bp_mll import bp_mll_loss
+import tensorflow as tf
+import keras
 
 class EventRelationships:
     tab = "\t"
@@ -62,6 +66,7 @@ class EventRelationships:
         mkdir(self.results_subdir)
         mkdir(self.models_subdir)
         mkdir(self.data_subdir)
+        plt.style.use("ggplot")
 
 
 
@@ -486,7 +491,7 @@ class EventRelationships:
 
             print("k")
 
-    def CrossValidateByCluster(self,date_start="2016-08-28",date_end="2016-12-31",n_clusters=300,n_dims=2000,window_size=30,y_window_size=7,verbose=True,separate=False,min_events=5,lazy=True):
+    def CrossValidateByCluster(self,date_start="2016-08-28",date_end="2016-12-31",n_clusters=100,n_dims=2000,window_size=14,y_window_size=7,verbose=True,separate=False,min_events=5,lazy=True,n_trees = 10):
         from dset import Dset
 
         dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end),freq="W").tolist()
@@ -553,22 +558,23 @@ class EventRelationships:
             # build dataset
             if not lazy or train_set is None:
                 try:
-                    train_set=load_model("30dset"+date,self.enc)
+                    train_set=load_model(str(window_size)+"dset"+str(n_clusters)+"c"+date,self.enc)
                     train_set.Analyze()
                 except (FileNotFoundError,EOFError):
                     train_set = Dset()
-                    train_set.Compile(train,out="30dset"+date)
+                    train_set.Compile(train,out=str(window_size)+"dset"+str(n_clusters)+"c"+date)
 
             # train model
             if not lazy or clfs is None:
                 try:
-                    #clfs = load_model("crossValPredRandomForest"+date,self.enc)
-                    clfs = load_model("crossValPredOneVsRest30"+date,self.enc)
-                except (FileNotFoundError,EOFError):
-                    #clfs=self.RandomForest(train_set,random_state=self.seed,n_estimators=10,bootstrap=True,out="crossValPredRandomForest"+date)
+                    clfs = load_model(str(window_size)+"crossValPred"+str(n_clusters)+"c"+"RandomForest"+date,self.enc)
+                    #clfs = load_model(str(window_size) + "crossValPred" + str(n_clusters) + "c" + "OneVsRest" + date,self.enc)
+                    #clfs = tf.keras.models.load_model(str(window_size)+"crossValBPMLL"+date+".h5")
+                except (FileNotFoundError,EOFError,OSError):
+                    #clfs=self.RandomForest(train_set,random_state=self.seed,n_estimators=n_trees,bootstrap=True,n_jobs = -1,min_samples_leaf=10) #memory error when saving out=str(window_size)+"crossValPredRandomForest"+date,
                     #clfs=self.NeuralNetwork(train_set)
-                    #clfs=self.BP_MLL(train_set,out="crossValBPMLL"+date)
-                    clfs = self.OneVsRest(train_set,out="crossValPredOneVsRest30"+date)
+                    clfs=self.BP_MLL(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date,n_epochs=5)
+                    #clfs = self.OneVsRest(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"OneVsRest"+date)
                 constantClfs=self.MultiLabelMostFrequent(train,n_labels=50,filter=list(train_set.yset.keys()))
 
             # cluster today's events
@@ -647,35 +653,38 @@ class EventRelationships:
         print("Mean constant Recall score: "+ str(np.mean(constantRecallScores)))
         print("Mean constant Fscore score: "+ str(np.mean(constantFscoreScores)))
 
+        return (np.array([np.mean(hammingScores),np.mean(hammingLossScores),np.mean(precisionScores),np.mean(recallScores),np.mean(fscoreScores)]),
+                np.array([np.mean(constantHammingScores),np.mean(constantHammingLossScores),np.mean(constantPrecisionScores),np.mean(constantRecallScores),np.mean(constantFscoreScores)]))
+
     ### Multi-label prediction ######################################################################################################################
 
-    def BP_MLL(self,dset,out=None):
-        from src.bp_mll import bp_mll_loss
-        import tensorflow as tf
-
+    def BP_MLL(self,dset,n_epochs=5,out=None):
         print("Training BP-MLL")
         x,y = dset.ToArray()
         n = x.shape[0]
         dim_no = x.shape[1]
         class_no = y.shape[1]
         # create simple mlp
-        model = tf.keras.models.Sequential([
-            tf.keras.layers.Dense(256,activation="relu",input_shape=(dim_no,),kernel_initializer="glorot_uniform"),
-            tf.keras.layers.Dense(128,activation="relu",kernel_initializer="glorot_uniform"),
-            tf.keras.layers.Dense(class_no, activation="sigmoid", kernel_initializer="glorot_uniform")
-        ])
-        model.compile(optimizer="adam",loss=bp_mll_loss,metrics=["accuracy"])
-        model.fit(x, y, epochs=100,verbose=True)
+        #with tf.device("/device:GPU:0"):
+        with tf.Session() as sess:
+            model = tf.keras.models.Sequential([
+                tf.keras.layers.Dense(256, activation="relu", input_shape=(dim_no,),
+                                      kernel_initializer="glorot_uniform"),
+                tf.keras.layers.Dense(128, activation="relu", kernel_initializer="glorot_uniform"),
+                tf.keras.layers.Dense(class_no, activation="sigmoid", kernel_initializer="glorot_uniform")
+            ])
+            model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+            sess.run(model.fit(x, y, epochs=n_epochs,verbose=True))
 
         if out is not None:
-            save_model(model,out)
+            model.save(out+".h5")
 
         return model
 
-    def OneVsRest(self,dset,out=None):
+    def OneVsRest(self,dset,out=None,n_jobs=-1):
         print("OneVsRest")
         x,y = dset.ToArray()
-        model = OneVsRestClassifier(LinearSVC())
+        model = OneVsRestClassifier(LinearSVC(),n_jobs=n_jobs)
         model.fit(x,y)
 
         if out is not None:
@@ -1374,6 +1383,31 @@ class EventRelationships:
             data[ctype] +=1
 
         self.Plot(list(data.values()),x_labels=["Pojem","Lokacija","Organziacija","Oseba"],title="Število različnih konceptov po kategorijah",xLabel="Tip koncepta",yLabel="Št. različnih konceptov")
+
+    def plot_coefficients(self,classifier, feature_names, top_features=20):
+        coef = classifier.coef_.ravel()
+        top_positive_coefficients = np.argsort(coef)[-top_features:]
+        top_negative_coefficients = np.argsort(coef)[:top_features]
+        top_coefficients = np.hstack([top_negative_coefficients, top_positive_coefficients])
+        # create plot
+        plt.figure(figsize=(15, 5))
+        colors = ["red" if c < 0 else "blue" for c in coef[top_coefficients]]
+        plt.bar(np.arange(2 * top_features), coef[top_coefficients], color=colors)
+        feature_names = np.array(feature_names)
+        plt.xticks(np.arange(1, 1 + 2 * top_features), feature_names[top_coefficients], rotation=60, ha="right")
+        plt.show()
+
+        #cv = CountVectorizer()
+        #cv.fit(data)
+        #print
+        #len(cv.vocabulary_)
+        #print
+        #cv.get_feature_names()
+        #X_train = cv.transform(data)
+
+        #svm = LinearSVC()
+        #svm.fit(X_train, target)
+        #plot_coefficients(svm, cv.get_feature_names())
 
     ### Data Analysis #########################################################################################################################
 
