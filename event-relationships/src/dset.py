@@ -5,6 +5,7 @@ from helpers import *
 from eventrelationships import *
 from enum import Enum
 import pandas as pd
+from sklearn import preprocessing
 
 class Dset(EventRelationships):
     excluded_types = {"loc", "person", "org"}
@@ -16,6 +17,8 @@ class Dset(EventRelationships):
     y_window_size = 7
     tsvd=None
     redx=None
+    scaler=None
+    cumulative=False
 
     def __init__(self, train_set=None,min_events=None,window_size=None):
         if train_set is None:
@@ -33,6 +36,7 @@ class Dset(EventRelationships):
             self.conceptCount = train_set.conceptCount
             self.add_keys=False
             self.tsvd=train_set.tsvd
+            self.scaler = train_set.scaler
             self.min_events = train_set.min_events
             self.window_size = train_set.window_size
 
@@ -88,10 +92,10 @@ class Dset(EventRelationships):
         for id, score in conceptList:
             if self.concepts.loc[id, :].type not in self.excluded_types and self.conceptCount[str(id)][1] >= self.min_events:
                 if id in self.dsets[axis]:
-                    self.dsets[axis][id][self.nsamples-1]=1
+                    self.dsets[axis][id][self.nsamples-1]=(1 if (not self.cumulative or axis==DsetAxis.Y) else self.dsets[axis][id][self.nsamples-1]+score)
                 elif self.add_keys:
                     self.dsets[axis][id] = [0 for i in range(self.nsamples - 1)]
-                    self.dsets[axis][id].append(1)
+                    self.dsets[axis][id].append(1 if (not self.cumulative or axis==DsetAxis.Y) else score)
 
     def Merge(self,existing):
         for k, v in existing.xset.items():
@@ -115,7 +119,7 @@ class Dset(EventRelationships):
         np.savetxt(os.path.join(self.temp_subdir, "_x") + ".txt", x, delimiter=self.sep,header=self.sep.join(map(str, list(self.xset.keys()))), fmt="%d")
         np.savetxt(os.path.join(self.temp_subdir, "_y") + ".txt", y, delimiter=self.sep,header=self.sep.join(map(str, list(self.yset.keys()))), fmt="%d")
 
-    def ToArray(self,dimred=False):
+    def ToArray(self,dimred=False,scale=False):
         x = np.asarray(list(self.xset.values()), dtype=int).T
         y = np.asarray(list(self.yset.values()), dtype=int).T
 
@@ -127,6 +131,11 @@ class Dset(EventRelationships):
                     self.redx = self.tsvd.transform(x)
             return self.redx,y
 
+        if scale:
+            if self.scaler is None:
+                self.scaler = preprocessing.StandardScaler().fit(x)
+            x=self.scaler.transform(x)
+
         return x,y
 
     def GetKeys(self,axis):
@@ -134,6 +143,9 @@ class Dset(EventRelationships):
 
     def GetFeatureNames(self,axis):
         keys = self.GetKeys(axis)
+        conceptIdToName = self.GetConceptIdToNameLookupDict()
+        return [conceptIdToName[str(cid)] for cid in keys]
+
 
 class DsetAxis(Enum):
     X=0

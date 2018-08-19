@@ -2,6 +2,7 @@ from eventrelationships import *
 from Kmeans import *
 from helpers import *
 from erinterface import *
+from dset import *
 
 if __name__ == '__main__':
 ### generate dataset ######################################################################################################################
@@ -179,29 +180,51 @@ if __name__ == '__main__':
 
 ### work
 
-    er = EventRelationships()
+    #er = EventRelationships()
     #er.Cluster()
-    er.CrossValidateByCluster()
+    #er.CrossValidateByCluster()
     #results = []
-    #constantResults = []
-    #for i in range(10,300,10):
-    #    res = er.CrossValidateByCluster(n_trees=i)
+    #trees = [10,50,100,200]
+    #for i in trees:
+    #    res = er.CrossValidateByCluster(n_trees=i,one=False,window_size=30)
     #    results.append(res[0])
-    #    constantResults.append(res[1])
-    #resPlot=np.concatenate(results,axis=1)
-    #constantResPLot = np.concatenate(constantResults,axis=1)
-    #np.savetxt("14dRandomForest10-300Trees100cGini2016-8-28",resPlot,delimiter=er.sep,encoding=er.enc)
-    #np.savetxt("14dRandomForest10-300Trees100cGini2016-8-28",constantResPLot,delimiter=er.sep,encoding=er.enc)
+    #resPlot=np.vstack(results)
+    #np.savetxt("30dRandomForest10-300Trees100cGini2016-8-28.csv",resPlot,delimiter=er.sep,encoding=er.enc)
+    ##resPlot=np.loadtxt("14dRandomForest10-300Trees100cGini2016-8-28.csv",delimiter=er.sep,encodi#ng=er.enc)
     #plt.style.use("ggplot")
-    #xvals=np.arange(0,500,10)
-    #plt.plot(xvals,resPlot[:0],"g",label="Točnost")
-    #plt.plot(xvals,resPlot[:1],"r",label="Točnost")
-    #plt.plot(xvals,resPlot[:2],"y",label="Točnost")
-    #plt.plot(xvals,resPlot[:3],"b",label="Točnost")
-    #plt.plot(xvals,resPlot[:4],"k",label="Točnost")
+    #xvals=trees
+    #plt.plot(xvals,resPlot[:,0],"g",label="Točnost")
+    ##plt.plot(xvals,resPlot[:1],"r",label="Hamming loss")
+    #plt.plot(xvals,resPlot[:,2],"y",label="Preciznost")
+    #plt.plot(xvals,resPlot[:,3],"b",label="Priklic")
+    #plt.plot(xvals,resPlot[:,4],"k",label="F-mera")
 
-    #plt.title()
     #plt.ylabel("Ocena")
     #plt.xlabel("Število dreves")
+    #plt.legend()
+    #plt.show()
 
+    #er.PlotSVCCoefficients(window_size=30,cindex=54,top_features=20)
+
+    er = EventRelationships()
+    results = []
+    epochs = [10,50,100]
+    for i in epochs:
+        res = er.CrossValidateByCluster(n_epochs=i,one=False,window_size=30)
+        results.append(res[0])
+    resPlot=np.vstack(results)
+    np.savetxt("30dNeuralNetworkBinRel2016-8-28.csv",resPlot,delimiter=er.sep,encoding=er.enc)
+    #resPlot=np.loadtxt("14dRandomForest10-300Trees100cGini2016-8-28.csv",delimiter=er.sep,encodi#ng=er.enc)
+    plt.style.use("ggplot")
+    xvals=epochs
+    plt.plot(xvals,resPlot[:,0],"g",label="Točnost")
+    #plt.plot(xvals,resPlot[:1],"r",label="Hamming loss")
+    plt.plot(xvals,resPlot[:,2],"y",label="Preciznost")
+    plt.plot(xvals,resPlot[:,3],"b",label="Priklic")
+    plt.plot(xvals,resPlot[:,4],"k",label="F-mera")
+
+    plt.ylabel("Ocena")
+    plt.xlabel("Število dreves")
+    plt.legend()
+    plt.show()
 

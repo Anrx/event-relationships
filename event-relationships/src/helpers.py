@@ -100,8 +100,18 @@ def sigmoid(z):
     return [1 / (1 + math.exp(-n)) for n in z]
 
 def bin_encode(x,limit=0.5):
-    x=np.clip(x,a_min=limit,a_max=0.5)
+    x[x<limit]=0
+    x[x>=limit]=1
+    #x=actual_clip(x,min=limit,max=limit)
     return x
 
 def string_to_object(x):
     return ast.literal_eval(x)
+
+# clip function that actually works as you would expect
+def actual_clip(x,min=None,max=None):
+    x=np.clip(x,a_min=min,a_max=None)
+    x[x == min] = 0
+    x=np.clip(x,a_min=None,a_max=max)
+    x[x == max] = 1
+    return x

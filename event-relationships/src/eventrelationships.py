@@ -41,9 +41,6 @@ import gc
 import pickle
 import os.path
 import matplotlib.pyplot as plt
-from bp_mll import bp_mll_loss
-import tensorflow as tf
-import keras
 
 class EventRelationships:
     tab = "\t"
@@ -491,8 +488,12 @@ class EventRelationships:
 
             print("k")
 
-    def CrossValidateByCluster(self,date_start="2016-08-28",date_end="2016-12-31",n_clusters=100,n_dims=2000,window_size=14,y_window_size=7,verbose=True,separate=False,min_events=5,lazy=True,n_trees = 10):
+    def CrossValidateByCluster(self,date_start="2016-08-28",date_end="2016-12-31",n_clusters=100,n_dims=2000,window_size=14,y_window_size=7,verbose=True,separate=False,min_events=5,lazy=True,n_trees = 10,n_epochs=10,one=False):
         from dset import Dset
+        import keras
+
+        from bp_mll import bp_mll_loss
+        keras.losses.bp_mll_loss = bp_mll_loss
 
         dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end),freq="W").tolist()
 
@@ -540,24 +541,26 @@ class EventRelationships:
             # cluster train set
             if not lazy or trainModel is None:
                 try:
-                    trainModel=load_model("scipyAgg"+date,enc=self.enc)
+                    trainModel=load_model("scipyAggWard"+date,enc=self.enc)
                     #trainLabels=trainModel.labels_
                     trainLabels = fcluster(trainModel, n_clusters, criterion="maxclust")
                     print("n clusters:"+str(len(set(trainLabels))))
                 except FileNotFoundError:
                     #trainModel,trainLab els= self.KMeans(trainMatrix,n_clusters,useMiniBatchKMeans=False,nar=verbose,seed=1,verbose=False,out="crossValCluster"+date)
                     #trainModel,trainLabels = self.AgglomerativeClustering(trainMatrix,n_clusters=n_clusters,out="crossValClusterAgg"+date)
-                    trainModel, trainLabels = self.AgglomerativeClustering(trainMatrixFull, n_clusters=n_clusters, affinity="euclidean", method="ward", out="scipyAgg" + date, imp="scipy")
+                    trainModel, trainLabels = self.AgglomerativeClustering(trainMatrixFull, n_clusters=n_clusters, affinity="euclidean", method="ward", out="scipyAggWard" + date, imp="scipy")
                 train["cluster"]=trainLabels
 
             # performance info
             #silhuette(trainMatrix,trainLabels)
             #self.ShowRelationships(None, "crossValClustering",train)
             #self.CountClusterSize(trainLabels,plot=False,events=train)
+            #self.ShowDendrogram(trainModel, p=500)
 
             # build dataset
             if not lazy or train_set is None:
                 try:
+                    #train_set=load_model(str(window_size)+"dsetCumulative"+str(n_clusters)+"c"+date,self.enc)
                     train_set=load_model(str(window_size)+"dset"+str(n_clusters)+"c"+date,self.enc)
                     train_set.Analyze()
                 except (FileNotFoundError,EOFError):
@@ -567,14 +570,18 @@ class EventRelationships:
             # train model
             if not lazy or clfs is None:
                 try:
-                    clfs = load_model(str(window_size)+"crossValPred"+str(n_clusters)+"c"+"RandomForest"+date,self.enc)
+                    #clfs = load_model(str(window_size)+"crossVal"+str(n_trees)+"t"+"Pred"+str(n_clusters)+"c"+"RandomForest"+date,self.enc)
                     #clfs = load_model(str(window_size) + "crossValPred" + str(n_clusters) + "c" + "OneVsRest" + date,self.enc)
-                    #clfs = tf.keras.models.load_model(str(window_size)+"crossValBPMLL"+date+".h5")
+                    clfs = keras.models.load_model(str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date+".h5")
+
+                    #clfs = keras.models.model_from_json(open(str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date+".h5").read())
+                    #clfs.load_weights
                 except (FileNotFoundError,EOFError,OSError):
-                    #clfs=self.RandomForest(train_set,random_state=self.seed,n_estimators=n_trees,bootstrap=True,n_jobs = -1,min_samples_leaf=10) #memory error when saving out=str(window_size)+"crossValPredRandomForest"+date,
+                    #clfs=self.RandomForest(train_set,random_state=self.seed,n_estimators=n_trees,bootstrap=True,n_jobs = 4,min_samples_leaf=5,criterion="gini",max_features=0.1) #memory error when saving out=str(window_size)+"crossValPredRandomForest"+date,
                     #clfs=self.NeuralNetwork(train_set)
-                    clfs=self.BP_MLL(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date,n_epochs=5)
-                    #clfs = self.OneVsRest(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"OneVsRest"+date)
+                    #clfs=self.BP_MLL(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date,n_epochs=n_epochs)
+                    clfs=self.BP_MLL(train_set,n_epochs=n_epochs)
+                    #clfs = self.OneVsRest(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"OneVsRestCumulativeScaled"+date,n_jobs=5,c=0.5,dual=False)
                 constantClfs=self.MultiLabelMostFrequent(train,n_labels=50,filter=list(train_set.yset.keys()))
 
             # cluster today's events
@@ -600,10 +607,12 @@ class EventRelationships:
                 test_set.Concat(currentTrainCluster,currentCluster)
 
             print("Predicting")
-            train_x,test_y = test_set.ToArray()
+            train_x,test_y = test_set.ToArray(scale=False)
             #train_x=tsvd.transform(train_x)
-            train_y = clfs.predict(train_x)
-            #train_y = bin_encode(clfs.predict(train_x),limit=0.1)
+
+            #train_y = clfs.predict(train_x)
+            train_y = bin_encode(clfs.predict(train_x),limit=0.5)
+
             constant_train_y = self.MLMFPredict(constantClfs, test_set.yset)
 
             print("Evaluation")
@@ -640,6 +649,10 @@ class EventRelationships:
                 train = train.append(current,ignore_index=True)
                 train_set.Merge(test_set)
 
+            if one:
+                return (np.array([np.mean(hammingScores), np.mean(hammingLossScores), np.mean(precisionScores),np.mean(recallScores), np.mean(fscoreScores)]),
+                        np.array([np.mean(constantHammingScores), np.mean(constantHammingLossScores),np.mean(constantPrecisionScores), np.mean(constantRecallScores),np.mean(constantFscoreScores)]))
+
         # final average scores
         print("Mean Hamming Score: " +str(np.mean(hammingScores)))
         print("Mean Hamming loss score: "+ str(np.mean(hammingLossScores)))
@@ -659,32 +672,38 @@ class EventRelationships:
     ### Multi-label prediction ######################################################################################################################
 
     def BP_MLL(self,dset,n_epochs=5,out=None):
+        from bp_mll import bp_mll_loss
+        import tensorflow as tf
+        import keras
+
         print("Training BP-MLL")
         x,y = dset.ToArray()
         n = x.shape[0]
         dim_no = x.shape[1]
         class_no = y.shape[1]
-        # create simple mlp
-        #with tf.device("/device:GPU:0"):
-        with tf.Session() as sess:
-            model = tf.keras.models.Sequential([
-                tf.keras.layers.Dense(256, activation="relu", input_shape=(dim_no,),
-                                      kernel_initializer="glorot_uniform"),
-                tf.keras.layers.Dense(128, activation="relu", kernel_initializer="glorot_uniform"),
-                tf.keras.layers.Dense(class_no, activation="sigmoid", kernel_initializer="glorot_uniform")
-            ])
-            model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
-            sess.run(model.fit(x, y, epochs=n_epochs,verbose=True))
+
+        model = keras.models.Sequential()
+        model.add(keras.layers.Dense(200,activation="relu",input_shape=(dim_no,)))
+        #model.add(keras.layers.Dropout(0.1))
+        model.add(keras.layers.Dense(200,activation="relu"))
+        #model.add(keras.layers.Dropout(0.1))
+        model.add(keras.layers.Dense(200,activation="relu"))
+        #model.add(keras.layers.Dropout(0.1))
+        model.add(keras.layers.Dense(class_no, activation="sigmoid"))
+
+        #model.compile(optimizer="adam", loss=bp_mll_loss, metrics=["accuracy"])
+        model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+        model.fit(x, y, epochs=n_epochs,verbose=True)
 
         if out is not None:
             model.save(out+".h5")
 
         return model
 
-    def OneVsRest(self,dset,out=None,n_jobs=-1):
+    def OneVsRest(self,dset,out=None,n_jobs=-1,c=1,dual=True):
         print("OneVsRest")
-        x,y = dset.ToArray()
-        model = OneVsRestClassifier(LinearSVC(),n_jobs=n_jobs)
+        x,y = dset.ToArray(scale=True)
+        model = OneVsRestClassifier(LinearSVC(C=c,dual=dual),n_jobs=n_jobs)
         model.fit(x,y)
 
         if out is not None:
@@ -968,7 +987,7 @@ class EventRelationships:
                 continue
             clusterArray = matrix[rows,]
             try:
-                distances = pairwise.pairwise_distances(clusterArray,metric = metric)
+                distances = pairwise.pairwise_distances(clusterArray,metric = metric,n_jobs=4)
             except Exception as e:
                 continue
             chronAvg = 0
@@ -990,7 +1009,7 @@ class EventRelationships:
 
 
     #optimize a clustering algorithm using silhouette score
-    def Cluster(self, events=None, min=50, max=10000, step=50, min_events=5,out=None,eval=True, date = "2016-08-28",plot=True):
+    def Cluster(self, events=None, min=10, max=1000, step=10, min_events=5,out=None,eval=True, date = "2016-08-28",plot=True):
         if events is None:
             events = self.GetEvents()
         if date is not None:
@@ -1009,8 +1028,8 @@ class EventRelationships:
         bestModel=None
         scores = []
         clusters = []
-        #model = self.AgglomerativeClustering(fitted, n_clusters=None, affinity="euclidean", method="ward",caching_dir="hierarichal_caching_dir",out="scipyAgg"+date, imp="scipy")
-        model = load_model("scipyAgg"+date, self.enc)
+        model = self.AgglomerativeClustering(fitted, n_clusters=None, affinity="euclidean", method="average",caching_dir="hierarichal_caching_dir",out="scipyAggAvg"+date, imp="scipy")
+        #model = load_model("scipyAggWard"+date, self.enc)
         #self.ShowDendrogram(model,p=500)
 
         for i in range(min, max, step):
@@ -1031,8 +1050,8 @@ class EventRelationships:
             if eval:
                 try:
                     print("scoring...")
-                    score=silhouette_score(fitted, labels, metric="euclidean",sample_size=10000,random_state=self.seed)
-                    #score = self.AverageChronologicalLinkage(self.GetClusters(labels,events,inplace=False),fitted)
+                    #score=silhouette_score(fitted, labels, metric="euclidean",sample_size=10000,random_state=self.seed)
+                    score = self.AverageChronologicalLinkage(self.GetClusters(labels,events,inplace=False),fitted)
                     #score = calinski_harabaz_score(matrix.toarray(),labels)
                     #score, coph_dists = cophenet(model, pdist(fitted))
                     print("score: " + str(score))
@@ -1382,9 +1401,14 @@ class EventRelationships:
             ctype = concept.type
             data[ctype] +=1
 
-        self.Plot(list(data.values()),x_labels=["Pojem","Lokacija","Organziacija","Oseba"],title="Število različnih konceptov po kategorijah",xLabel="Tip koncepta",yLabel="Št. različnih konceptov")
+        self.Plot(list(data.values()),x_labels=["Pojem","Lokacija","Organizacija","Oseba"],title="Število različnih konceptov po kategorijah",xLabel="Tip koncepta",yLabel="Št. različnih konceptov")
 
-    def plot_coefficients(self,classifier, feature_names, top_features=20):
+    def PlotCoefficients(self,onevsrest,classifier_index, dset, top_features=20):
+        from dset import Dset
+        from dset import DsetAxis
+
+        feature_names = dset.GetFeatureNames(DsetAxis.X)
+        classifier = onevsrest.estimators_[classifier_index]
         coef = classifier.coef_.ravel()
         top_positive_coefficients = np.argsort(coef)[-top_features:]
         top_negative_coefficients = np.argsort(coef)[:top_features]
@@ -1394,20 +1418,19 @@ class EventRelationships:
         colors = ["red" if c < 0 else "blue" for c in coef[top_coefficients]]
         plt.bar(np.arange(2 * top_features), coef[top_coefficients], color=colors)
         feature_names = np.array(feature_names)
-        plt.xticks(np.arange(1, 1 + 2 * top_features), feature_names[top_coefficients], rotation=60, ha="right")
+        plt.xticks(np.arange(0, 1 + 2 * top_features), feature_names[top_coefficients], rotation=40, ha="right")
+        plt.title(dset.GetFeatureNames(DsetAxis.Y)[classifier_index])
         plt.show()
 
-        #cv = CountVectorizer()
-        #cv.fit(data)
-        #print
-        #len(cv.vocabulary_)
-        #print
-        #cv.get_feature_names()
-        #X_train = cv.transform(data)
+    def PlotSVCCoefficients(self,window_size=14,n_clusters=100,date="2016-08-28",cindex=0,top_features=20):
+        from dset import Dset
+        from dset import DsetAxis
 
-        #svm = LinearSVC()
-        #svm.fit(X_train, target)
-        #plot_coefficients(svm, cv.get_feature_names())
+        train_set = load_model(str(window_size) + "dset" + str(n_clusters) + "c" + date, self.enc)
+        clfs = load_model(str(window_size) + "crossValPred" + str(n_clusters) + "c" + "OneVsRest" + date, self.enc)
+
+        print([(index, name) for index, name in enumerate(train_set.GetFeatureNames(DsetAxis.Y))])
+        self.PlotCoefficients(clfs, cindex, train_set, top_features=top_features)
 
     ### Data Analysis #########################################################################################################################
 
