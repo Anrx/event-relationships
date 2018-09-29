@@ -26,14 +26,16 @@ class Dset(EventRelationships):
             self.yset = OrderedDict()
             self.concepts = self.GetConcepts(index_col=0)
             self.conceptCount = self.GetConceptCount()
+            self.conceptIdToUri = self.GetConceptIdToUriLookupDict()
             self.add_keys=True
             if min_events is not None: self.min_events=min_events
             if window_size is not None: self.window_size = window_size
         else:
             self.xset = OrderedDict({key: [] for key in list(train_set.xset.keys())})
             self.yset = OrderedDict({key: [] for key in list(train_set.yset.keys())})
-            self.concepts = train_set.concepts
-            self.conceptCount = train_set.conceptCount
+            self.concepts = self.GetConcepts(index_col=0)
+            self.conceptCount = self.GetConceptCount()
+            self.conceptIdToUri = self.GetConceptIdToUriLookupDict()
             self.add_keys=False
             self.tsvd=train_set.tsvd
             self.scaler = train_set.scaler
@@ -67,12 +69,13 @@ class Dset(EventRelationships):
                 startDate = (startDate + timedelta(days=1))
                 endDate = (endDate + timedelta(days=1))
 
-        self.Analyze()
 
         #self.ToArray(dimred=True) #force it to build dimred before saving
+        self.Analyze()
 
         if out is not None:
             save_model(self, out)
+
 
     def Concat(self,xevents,yevents):
         if (xevents.size == 0 or yevents.size == 0):
@@ -90,7 +93,21 @@ class Dset(EventRelationships):
     def Append(self,event,axis):
         conceptList = string_to_object(event.concepts)
         for id, score in conceptList:
-            if self.concepts.loc[id, :].type not in self.excluded_types and self.conceptCount[str(id)][1] >= self.min_events:
+            lastId = id
+            id = self.conceptIdToUri[id] if id in self.conceptIdToUri else id
+            try:
+                cType = self.concepts.loc[str(id), :].type
+            except ValueError:
+                continue
+            except KeyError:
+                print(lastId)
+                raise
+            try:
+                cNumEvents = self.conceptCount[str(id)][1]
+            except:
+                continue
+            if cType not in self.excluded_types and cNumEvents >= self.min_events:
+                id = int(id)
                 if id in self.dsets[axis]:
                     self.dsets[axis][id][self.nsamples-1]=(1 if (not self.cumulative or axis==DsetAxis.Y) else self.dsets[axis][id][self.nsamples-1]+score)
                 elif self.add_keys:

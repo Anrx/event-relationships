@@ -71,10 +71,26 @@ if __name__ == '__main__':
 
 
 ### visualization ######################################################################################################################
-    #prepare dataset for heatmap
     #er = EventRelationships()
+    #conceptCount = er.GetConceptCount()
+    #bins = [0,0,0,0,0]
+    #labels = ["0-5","5-10","10-100","100-1000","1000-30000"]
+    #for id,stuff in conceptCount.items():
+    #    count = stuff[1]
+    #    if count<=5:
+    #        bins[0]+=1
+    #    elif count<=10:
+    #        bins[1] += 1
+    #    elif count<=100:
+    #        bins[2] += 1
+    #    elif count<=1000:
+    #        bins[3] += 1#
+    #    elif count<=30000:
+    #        bins[4] += 1
+    #er.Plot(bins,x_labels=labels,rotate=False,out="conceptDistributionByNumEvents.png")
+
     #er.ConceptHeatmap(out="conceptHeatmap")
-    #er.CountConcepts(out="conceptCount",include_names=True)
+    #er.CountConcepts(out="conceptCount",include_names=False)
     #er.ConceptFrequencyHeatmap(n_days=366,n_concepts=300)
 
     #concept line graph
@@ -127,8 +143,8 @@ if __name__ == '__main__':
 
     #train,test = er.TrainTestSplit("2016-04-25",out=True)
     #er.Cluster()
-    #model =load_model("scipy2016-04-25",er.enc)
-    #er.ShowDendrogram(model,p=50000)
+    #model =load_model("scipyAggAvg2016-08-28",er.enc)
+    #er.ShowDendrogram(model,p=500)
     #er.FindDuplicates()
     #model=load_model("bestCluster",er.enc)
     #events, test = er.TrainTestSplit("2016-04-25")
@@ -154,7 +170,6 @@ if __name__ == '__main__':
     #trainMatrix, trainVocab = er.CsrMatrix(min_events=50, verbose=True)
     #trainModel, trainLabels = er.KMeans(trainMatrix, 1000, useMiniBatchKMeans=True, nar=True,out="MiniBatchKMeans_1000_min5_train_cluster538")
     #train["cluster"] = trainLabels
-    #er.CountClusterSize(model.labels_)
     #er.ShowRelationships(model.labels_, "MiniBatchKMeans_1000_min5_train_cluster538", train)
 
 
@@ -180,9 +195,9 @@ if __name__ == '__main__':
 
 ### work
 
-    #er = EventRelationships()
+    er = EventRelationships()
     #er.Cluster()
-    #er.CrossValidateByCluster()
+    er.CrossValidateByCluster()
     #results = []
     #trees = [10,50,100,200]
     #for i in trees:
@@ -206,25 +221,75 @@ if __name__ == '__main__':
 
     #er.PlotSVCCoefficients(window_size=30,cindex=54,top_features=20)
 
-    er = EventRelationships()
-    results = []
-    epochs = [10,50,100]
-    for i in epochs:
-        res = er.CrossValidateByCluster(n_epochs=i,one=False,window_size=30)
-        results.append(res[0])
-    resPlot=np.vstack(results)
-    np.savetxt("30dNeuralNetworkBinRel2016-8-28.csv",resPlot,delimiter=er.sep,encoding=er.enc)
-    #resPlot=np.loadtxt("14dRandomForest10-300Trees100cGini2016-8-28.csv",delimiter=er.sep,encodi#ng=er.enc)
-    plt.style.use("ggplot")
-    xvals=epochs
-    plt.plot(xvals,resPlot[:,0],"g",label="Točnost")
-    #plt.plot(xvals,resPlot[:1],"r",label="Hamming loss")
-    plt.plot(xvals,resPlot[:,2],"y",label="Preciznost")
-    plt.plot(xvals,resPlot[:,3],"b",label="Priklic")
-    plt.plot(xvals,resPlot[:,4],"k",label="F-mera")
+    #er = EventRelationships()
+    #results = []
+    #epochs = [10,50,100]
+    #for i in epochs:
+    #    res = er.CrossValidateByCluster(n_epochs=i,one=False,window_size=30)
+    #    results.append(res[0])
+    #resPlot=np.vstack(results)
+    #np.savetxt("30dNeuralNetworkBinRel2016-8-28.csv",resPlot,delimiter=er.sep,encoding=er.enc)
+    ##resPlot=np.loadtxt("14dRandomForest10-300Trees100cGini2016-8-28.csv",delimiter=er.sep,encodi#ng=er.enc)
+    #plt.style.use("ggplot")
+    #xvals=epochs
+    #plt.plot(xvals,resPlot[:,0],"g",label="Točnost")
+    ##plt.plot(xvals,resPlot[:1],"r",label="Hamming loss")
+    #plt.plot(xvals,resPlot[:,2],"y",label="Preciznost")
+    #plt.plot(xvals,resPlot[:,3],"b",label="Priklic")
+    #plt.plot(xvals,resPlot[:,4],"k",label="F-mera")
 
-    plt.ylabel("Ocena")
-    plt.xlabel("Število dreves")
-    plt.legend()
-    plt.show()
+    #plt.ylabel("Ocena")
+    #plt.xlabel("Število dreves")
+    #plt.legend()
+    #plt.show()
 
+    #er = EventRelationships()
+    #resultsPred = []
+    #resultsConstant = []
+    #clusterModel = load_model("scipyAggWard2016-08-28",enc=er.enc)
+    #predModel = load_model("30crossValPred100cOneVsRest2016-08-28",er.enc)
+    #train_set= load_model("30dset100c2016-08-28",er.enc)
+    #back=er.Validate(predModel,clusterModel,train_set=train_set)
+    #resultsPred.append(back[0])
+    #resultsConstant.append(back[1])
+    #back=er.Validate(predModel,clusterModel,train_set=train_set,date_start="2017-10-01",date_end="2017-10-31")
+    #resultsPred.append(back[0])
+    #resultsConstant.append(back[1])
+
+    #er.CrossValidateByCluster()
+
+### plots #######################
+    #er = EventRelationships()
+
+    #er.PlotEventDateRangePerWeek()
+    #er.PlotEventDateRangeErrorBars()
+    #er.PlotConceptTypes()
+    #er.ConceptFrequencyHeatmap(out="heatmap100d50cFreq.png")
+    #er.PlotSVCCoefficients(cindex=54)
+    #er.PlotSVCCoefficients(cindex=0)
+    #model = load_model("scipyAggWard2016-08-28", er.enc)
+    #model = load_model("scipyAggAvg2016-08-28", er.enc)
+    #labels = fcluster(model, 100, criterion="maxclust")
+    #er.CountClusterSize(labels,frequency=False)
+    #er.ShowDendrogram(model)
+
+    #np.savetxt("chronAggClustScores2016-8-28.csv", scores, delimiter=self.sep, encoding=self.enc)
+    #np.savetxt("chronAggClustClusters2016-8-28.csv", clusters, delimiter=self.sep, encoding=self.enc)
+    #scores=np.loadtxt("silhouetteAggClustScores2016-8-28.csv",delimiter=er.sep,encoding=er.enc)
+    #clusters=np.loadtxt("silhouetteAggClustClusters2016-8-28.csv",delimiter=er.sep,encoding=er.enc)
+    #plt.plot(clusters, scores)
+    #plt.xticks(size=12)
+    #plt.yticks(size=12)
+    #plt.savefig("silhouetteAggClust2016-08-28", bbox_inches="tight", dpi=300)
+
+    #tsvd = load_model("tsvd2016-08-28", er.enc)
+    #er.Plot(np.cumsum(tsvd.explained_variance_ratio_),out="cumSum2000tsvd.png",type="line")
+
+### plot cumsum ###
+    #er=EventRelationships()
+    #model = load_model("tsvd2016-08-28", enc=er.enc)
+    #er.Plot(np.cumsum(model.explained_variance_ratio_),type="line",out="cumSum2000tsvd.png")
+
+    #er = EventRelationships()
+    #er.Cluster()
+    #er.CrossValidateByCluster()

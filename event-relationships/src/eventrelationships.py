@@ -64,6 +64,7 @@ class EventRelationships:
         mkdir(self.models_subdir)
         mkdir(self.data_subdir)
         plt.style.use("ggplot")
+        self.cidToUri = None
 
 
 
@@ -85,6 +86,21 @@ class EventRelationships:
         ids = concepts.conceptId.values
         names = concepts.title.values
         return {id:name for id,name in zip(ids,names)}
+
+    def GetConceptIdToUriLookupDict(self):
+        try:
+            if self.cidToUri is None:
+                concepts=self.GetConcepts()
+                ids = concepts.conceptId.values
+                uris = concepts.uri.values
+                self.cidToUri = {uri:id for id,uri in zip(ids,uris)}
+                #save_as_json(self.cidToUri,"cidtouri.json")
+            return self.cidToUri
+        except AttributeError:
+            concepts = self.GetConcepts()
+            ids = concepts.conceptId.values
+            uris = concepts.uri.values
+            return {uri: id for id, uri in zip(ids, uris)}
 
     def GetEvents(self,index_col=None):
         return pd.read_csv(os.path.join(self.data_subdir, self.events_filename) + ".csv", sep=self.sep, encoding=self.enc, dtype=str,index_col=index_col) # read events into dataframe
@@ -187,12 +203,27 @@ class EventRelationships:
                 conceptCount = json.load(f)
         excluded_concepts=0
         excluded_events=0
+        conceptIdToUri = self.GetConceptIdToUriLookupDict()
         for i,eventConcepts in enumerate(eventsConcepts):
-            conceptsList = ast.literal_eval(eventConcepts)  # list of tuples like (conceptId,score)
+            try:
+                conceptsList = ast.literal_eval(eventConcepts)  # list of tuples like (conceptId,score)
+            except:
+                print(str(i))
+                print(events.values[i])
             included=False
             #build csr vectors
             for id,score in conceptsList:
-                if (min_events<2 or conceptCount[str(id)][1]>=min_events) and (excluded_types is None or concepts.loc[id, :].type not in excluded_types):
+                id = conceptIdToUri[id] if id in conceptIdToUri else id
+                try:
+                    if excluded_types is not None:
+                        cType = concepts.loc[str(id), :].type
+                except ValueError:
+                    continue
+                try:
+                    cNumEvents = conceptCount[str(id)][1]
+                except KeyError:
+                    continue
+                if (min_events<2 or cNumEvents>=min_events) and (excluded_types is None or cType not in excluded_types):
                     included=True
                     index = vocabulary.setdefault(id,len(vocabulary))
                     indices.append(index)
@@ -488,7 +519,169 @@ class EventRelationships:
 
             print("k")
 
-    def CrossValidateByCluster(self,date_start="2016-08-28",date_end="2016-12-31",n_clusters=100,n_dims=2000,window_size=14,y_window_size=7,verbose=True,separate=False,min_events=5,lazy=True,n_trees = 10,n_epochs=10,one=False):
+    def Validate(self,predModel,clusterModel,train_set,date_start="2017-01-01",date_end="2017-04-29",window_size=30,y_window_size=7,min_events=5,n_clusters=100):
+        from dset import Dset
+        import keras
+        from bp_mll import bp_mll_loss
+        keras.losses.bp_mll_loss = bp_mll_loss
+
+        dateRange = pd.date_range(str_to_date(date_start), str_to_date(date_end), freq="W").tolist()
+
+        hammingScores=[]
+        hammingLossScores=[]
+        precisionScores = []
+        recallScores = []
+        fscoreScores = []
+
+        constantHammingScores=[]
+        constantHammingLossScores = []
+        constantPrecisionScores = []
+        constantRecallScores = []
+        constantFscoreScores = []
+
+        train = None
+        trainModel = None
+        clfs = None
+        for date in dateRange:
+            #split dset by date
+
+            date = date.strftime('%Y-%m-%d')
+            print(date)
+
+            if train is not None:
+                _, test = self.TrainTestSplit(date)
+            else:
+                train,test = self.TrainTestSplit(date)
+
+            trainMatrix, trainVocab = self.CsrMatrix(events=train, min_events=min_events)
+
+            #cluster
+            if trainModel is None:
+                trainModel=clusterModel
+                trainLabels = fcluster(trainModel, 100, criterion="maxclust")
+
+                org, _= self.TrainTestSplit("2016-08-28")
+                orgMatrix, orgVocab = self.CsrMatrix(events=org, min_events=min_events)
+                print("n clusters:"+str(len(set(trainLabels))))
+                org["cluster"]=trainLabels
+
+                #self.CountClusterSize(trainLabels, plot=True, events=org)
+                #fdad = org.loc[org.cluster == 100]
+                #fdad.to_csv("commoncluster.csv",sep=self.sep,na_rep=0,encoding=self.enc)
+
+                untilDates = pd.to_datetime(train.date)
+                untilCond = np.logical_and(untilDates < str_to_date(date),untilDates >= str_to_date("2016-08-28"))
+                until = train.loc[untilCond]
+                untilCsr = self.CsrFromVocab(orgVocab, until)
+                knnModel = self.Clustering2KNN(org.cluster, orgMatrix)
+                untilLabels = knnModel.predict(untilCsr)
+                until.loc[:, "cluster"] = untilLabels
+                org = org.append(until, ignore_index=True)
+                train=org
+
+                trainMatrix, trainVocab = self.CsrMatrix(events=train, min_events=min_events)
+
+                #clfs = self.BP_MLL(train_set,out=str(window_size) + "crossValPred" + str(n_clusters) + "c" + "BPMLL" + date,n_epochs=50)
+                #clfs = keras.models.load_model(str(window_size) + "crossValPred" + str(n_clusters) + "c" + "BPMLL" + date + ".h5")
+
+                clfs = self.RandomForest(train_set, random_state=self.seed, n_estimators=10, bootstrap=True,n_jobs=4, min_samples_leaf=5, criterion="gini", max_features=0.1)
+
+                #until_set = Dset(train_set)
+                #until_set.Compile(until)
+                #train_set.Merge(until_set)
+                #save_model(train_set, out=str(window_size)+"valDset"+str(n_clusters)+"c"+date)
+                train_set = load_model(str(window_size) + "valDset" + str(n_clusters) + "c" + date, self.enc)
+                train_set.Analyze()
+
+            if clfs is None:
+                clfs = predModel
+            constantClfs=self.MultiLabelMostFrequent(train,n_labels=50,filter=list(train_set.yset.keys()))
+
+            # cluster today's events
+            testDates = pd.to_datetime(test.date)
+            testCond = np.logical_and(testDates >= str_to_date(date),
+                                      testDates < (str_to_date(date) + timedelta(days=y_window_size)))
+            current = test.loc[testCond]
+            currentCsr = self.CsrFromVocab(trainVocab, current)
+            knnModel = self.Clustering2KNN(train.cluster, trainMatrix)
+            currentLabels = knnModel.predict(currentCsr)
+            current.loc[:, "cluster"] = currentLabels
+
+            print("Building test set")
+            test_set = Dset(train_set)
+            for currentLabel in set(currentLabels):
+                trainCluster = train.loc[train.cluster == currentLabel]
+                currentCluster = current.loc[current.cluster == currentLabel]
+
+                startDate = (str_to_date(date) - timedelta(days=window_size)).strftime('%Y-%m-%d')
+                cond = np.logical_and(trainCluster.date >= startDate, trainCluster.date < date)
+                currentTrainCluster = trainCluster.loc[cond]
+
+                test_set.Concat(currentTrainCluster, currentCluster)
+            test_set.Analyze()
+
+            print("Predicting")
+            train_x, test_y = test_set.ToArray(scale=False)
+            # train_x=tsvd.transform(train_x)
+
+            # train_y = clfs.predict(train_x)
+            train_y = bin_encode(clfs.predict(train_x), limit=0.5)
+
+            constant_train_y = self.MLMFPredict(constantClfs, test_set.yset)
+
+            print("Evaluation")
+            hammingScore = self.HammingScore(test_y, train_y, verbose=True, xset=test_set.xset,
+                                             yset=test_set.yset, separate=False, print_names=False)
+            hammingLoss = hamming_loss(test_y, train_y)
+            prfs = precision_recall_fscore_support(test_y, train_y, average="samples")
+
+            constantHammingScore = self.HammingScore(test_y, constant_train_y, verbose=True, xset=test_set.xset,
+                                                     yset=test_set.yset, separate=False)
+            constantHammingLoss = hamming_loss(test_y, constant_train_y)
+            constantPrfs = precision_recall_fscore_support(test_y, constant_train_y, average="samples")
+
+            hammingScores.append(hammingScore)
+            hammingLossScores.append(hammingLoss)
+            precisionScores.append(prfs[0])
+            recallScores.append(prfs[1])
+            fscoreScores.append(prfs[2])
+
+            constantHammingScores.append(constantHammingScore)
+            constantHammingLossScores.append(constantHammingLoss)
+            constantPrecisionScores.append(constantPrfs[0])
+            constantRecallScores.append(constantPrfs[1])
+            constantFscoreScores.append(constantPrfs[2])
+
+            # print(classification_report(test_y, train_y)) #,target_names=self.ConceptIdToName([yset.keys()])
+            print("Hamming score for " + date + " is " + str(hammingScore))
+            print("Hammming loss score for " + date + " is " + str(hammingLoss))
+            print("precision_recall_fscore_support for " + date + " is " + str(prfs))
+
+            print("Constant Hamming score for " + date + " is " + str(constantHammingScore))
+            print("Hammming loss score for " + date + " is " + str(constantHammingLoss))
+            print("precision_recall_fscore_support for " + date + " is " + str(constantPrfs))
+
+            train = train.append(current, ignore_index=True)
+            train_set.Merge(test_set)
+
+        # final average scores
+        print("Mean Hamming Score: " + str(np.mean(hammingScores)))
+        print("Mean Hamming loss score: " + str(np.mean(hammingLossScores)))
+        print("Mean Precision score: " + str(np.mean(precisionScores)))
+        print("Mean Recall score: " + str(np.mean(recallScores)))
+        print("Mean Fscore score: " + str(np.mean(fscoreScores)))
+
+        print("Mean constant Hamming score: " + str(np.mean(constantHammingScores)))
+        print("Mean constant Hamming loss score: " + str(np.mean(constantHammingLossScores)))
+        print("Mean constant Precision score: " + str(np.mean(constantPrecisionScores)))
+        print("Mean constant Recall score: " + str(np.mean(constantRecallScores)))
+        print("Mean constant Fscore score: " + str(np.mean(constantFscoreScores)))
+
+        return (np.array([hammingScores, hammingLossScores, precisionScores, recallScores, fscoreScores]),
+                np.array([constantHammingScores, constantHammingLossScores,constantPrecisionScores, constantRecallScores,constantFscoreScores]))
+
+
+    def CrossValidateByCluster(self,date_eval="2016-28-08",date_start="2017-01-01",date_end="2017-03-01",n_clusters=100,n_dims=2000,window_size=14,y_window_size=7,verbose=True,separate=False,min_events=5,lazy=True,n_trees = 10,n_epochs=10,one=False):
         from dset import Dset
         import keras
 
@@ -534,9 +727,6 @@ class EventRelationships:
                     trainMatrixFull = tsvd.transform(trainMatrix)
                 except FileNotFoundError:
                     trainMatrixFull,tsvd = self.TruncatedSVD(trainMatrix, n_components=n_dims, random_state=self.seed, algorithm="randomized",out="tsvd"+date)
-            #else:
-            #    trainMatrixFull = tsvd.transform(trainMatrix)
-
 
             # cluster train set
             if not lazy or trainModel is None:
@@ -570,19 +760,20 @@ class EventRelationships:
             # train model
             if not lazy or clfs is None:
                 try:
-                    #clfs = load_model(str(window_size)+"crossVal"+str(n_trees)+"t"+"Pred"+str(n_clusters)+"c"+"RandomForest"+date,self.enc)
+                    clfs = load_model(str(window_size)+"crossVal"+str(n_trees)+"t"+"Pred"+str(n_clusters)+"c"+"RandomForest"+date,self.enc)
                     #clfs = load_model(str(window_size) + "crossValPred" + str(n_clusters) + "c" + "OneVsRest" + date,self.enc)
-                    clfs = keras.models.load_model(str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date+".h5")
+                    #clfs = keras.models.load_model(str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date+".h5")
 
                     #clfs = keras.models.model_from_json(open(str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date+".h5").read())
                     #clfs.load_weights
                 except (FileNotFoundError,EOFError,OSError):
-                    #clfs=self.RandomForest(train_set,random_state=self.seed,n_estimators=n_trees,bootstrap=True,n_jobs = 4,min_samples_leaf=5,criterion="gini",max_features=0.1) #memory error when saving out=str(window_size)+"crossValPredRandomForest"+date,
+                    clfs=self.RandomForest(train_set,random_state=self.seed,n_estimators=n_trees,bootstrap=True,n_jobs = 4,min_samples_leaf=5,criterion="gini",max_features=0.1) #memory error when saving out=str(window_size)+"crossValPredRandomForest"+date,
                     #clfs=self.NeuralNetwork(train_set)
                     #clfs=self.BP_MLL(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"BPMLL"+date,n_epochs=n_epochs)
-                    clfs=self.BP_MLL(train_set,n_epochs=n_epochs)
-                    #clfs = self.OneVsRest(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"OneVsRestCumulativeScaled"+date,n_jobs=5,c=0.5,dual=False)
+                    #clfs=self.BP_MLL(train_set,n_epochs=n_epochs)
+                    #clfs = self.OneVsRest(train_set,out=str(window_size)+"crossValPred"+str(n_clusters)+"c"+"OneVsRest"+date,n_jobs=5)
                 constantClfs=self.MultiLabelMostFrequent(train,n_labels=50,filter=list(train_set.yset.keys()))
+                #save_as_json(constantClfs,"constantClfs")
 
             # cluster today's events
             testDates = pd.to_datetime(test.date)
@@ -691,8 +882,8 @@ class EventRelationships:
         #model.add(keras.layers.Dropout(0.1))
         model.add(keras.layers.Dense(class_no, activation="sigmoid"))
 
-        #model.compile(optimizer="adam", loss=bp_mll_loss, metrics=["accuracy"])
-        model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+        model.compile(optimizer="adam", loss=bp_mll_loss, metrics=["accuracy"])
+        #model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
         model.fit(x, y, epochs=n_epochs,verbose=True)
 
         if out is not None:
@@ -700,10 +891,10 @@ class EventRelationships:
 
         return model
 
-    def OneVsRest(self,dset,out=None,n_jobs=-1,c=1,dual=True):
+    def OneVsRest(self,dset,out=None,n_jobs=-1):
         print("OneVsRest")
         x,y = dset.ToArray(scale=True)
-        model = OneVsRestClassifier(LinearSVC(C=c,dual=dual),n_jobs=n_jobs)
+        model = OneVsRestClassifier(LinearSVC(),n_jobs=n_jobs)
         model.fit(x,y)
 
         if out is not None:
@@ -927,7 +1118,7 @@ class EventRelationships:
         for label in labels:
             cs[label]+=1
         print(len(cs))
-        if(frequency):
+        if frequency:
             largest=max(cs.items(), key=lambda cpt: cpt[1])[0]
             largestCluster = events.loc[events.cluster == largest]
             counts = self.CountConcepts(events=largestCluster, desc=True, min_score=0,n_concepts=10,include_names=True)
@@ -935,7 +1126,7 @@ class EventRelationships:
         print(list(cs.values()))
 
         if plot:
-            self.Plot(list(cs.values()))
+            self.Plot(list(cs.values()),out="clusterSizes2016-08-28.png",rotate=False)
 
         return cs
 
@@ -1009,7 +1200,7 @@ class EventRelationships:
 
 
     #optimize a clustering algorithm using silhouette score
-    def Cluster(self, events=None, min=10, max=1000, step=10, min_events=5,out=None,eval=True, date = "2016-08-28",plot=True):
+    def Cluster(self, events=None, min=30, max=3000, step=30, min_events=5,out=None,eval=True, date = "2016-08-28",plot=True):
         if events is None:
             events = self.GetEvents()
         if date is not None:
@@ -1020,7 +1211,7 @@ class EventRelationships:
         #fitted,tsvd = self.TruncatedSVD(matrix,n_components=2000,random_state=self.seed,algorithm="randomized",out="tsvd"+date)
         tsvd = load_model("tsvd" + date, self.enc)
         fitted=tsvd.transform(matrix)
-        print(tsvd.explained_variance_ratio_.sum())
+        #print(tsvd.explained_variance_ratio_.sum())
         #self.Plot(np.cumsum(tsvd.explained_variance_ratio_))
 
         bestClusters=0
@@ -1028,8 +1219,8 @@ class EventRelationships:
         bestModel=None
         scores = []
         clusters = []
-        model = self.AgglomerativeClustering(fitted, n_clusters=None, affinity="euclidean", method="average",caching_dir="hierarichal_caching_dir",out="scipyAggAvg"+date, imp="scipy")
-        #model = load_model("scipyAggWard"+date, self.enc)
+        #model = self.AgglomerativeClustering(fitted, n_clusters=None, affinity="euclidean", method="average",caching_dir="hierarichal_caching_dir",out="scipyAggAvg"+date, imp="scipy")
+        model = load_model("scipyAggWard"+date, self.enc)
         #self.ShowDendrogram(model,p=500)
 
         for i in range(min, max, step):
@@ -1070,11 +1261,15 @@ class EventRelationships:
         if out is not None:
             save_model(bestModel,out)
 
+        np.savetxt("chronAggClustScores2016-8-28.csv", scores, delimiter=self.sep, encoding=self.enc)
+        np.savetxt("chronAggClustClusters2016-8-28.csv", clusters, delimiter=self.sep, encoding=self.enc)
+
         if plot:
             plt.plot(clusters,scores)
-            plt.ylabel("score")
-            plt.xlabel("distance")
-            plt.show()
+            plt.xticks(size=11)
+            plt.yticks(size=11)
+            plt.savefig("chronAggClust2016-08-28", bbox_inches="tight", dpi=1000)
+            #plt.show()
 
     # write all the clusters to a file in a human readable format
     def ShowRelationships(self,labels,out,events):
@@ -1231,15 +1426,20 @@ class EventRelationships:
         indptr = [0]
         indices = []
         data = []
+        conceptIdToUri = self.GetConceptIdToUriLookupDict()
         for _,event in events.iterrows():
             conceptsList = ast.literal_eval(event.concepts)
             #build csr vectors
             for id,score in conceptsList:
-                if id in vocab:
-                    index = vocab[id]
-                    indices.append(index)
-                    if normalize: score = normalize(score,0,100)
-                    data.append(score*concept_wgt)
+                id = conceptIdToUri[id] if id in conceptIdToUri else id
+                try:
+                    if int(id) in vocab:
+                        index = vocab[int(id)]
+                        indices.append(index)
+                        if normalize: score = normalize(score,0,100)
+                        data.append(score*concept_wgt)
+                except ValueError:
+                    continue
 
             #include date dimension
             if include_date:
@@ -1265,36 +1465,48 @@ class EventRelationships:
     ### Data Visualisation #########################################################################################################################
 
     # plot data
-    def Plot(self, vals, type="bar", x_labels=None,title=None,xLabel=None,yLabel=None):
+    def Plot(self, vals, type="bar", x_labels=None,title=None,xLabel=None,yLabel=None,rotate=True,out=None,fontSize=12,dpi=300):
         if type.lower()=="bar":
             fig, ax = plt.subplots()
             ax.bar(range(len(vals)), vals, align="center")
             if x_labels is not None:
                 #ax.set_xticks(np.arange(0,len(x_labels)*10,step=10))
                 ax.set_xticks(range(len(x_labels)))
-                plt.xticks(rotation=90)
                 ax.set_xticklabels(x_labels)
+
+            if fontSize:
+                if rotate:
+                    plt.xticks(rotation=90, size=fontSize)
+                else:
+                    plt.xticks(size=fontSize)
+                plt.yticks(size=fontSize)
+            elif rotate:
+                plt.xticks(rotation=90)
             if title is not None: plt.title(title)
             if xLabel is not None: plt.xlabel(xLabel)
             if yLabel is not None: plt.ylabel(yLabel)
         elif type.lower()=="line":
             plt.plot(vals)
-        plt.show()
+            plt.xticks(size=fontSize)
+            plt.yticks(size=fontSize)
+        #plt.show()
+        if out is not None:
+            plt.savefig(out,bbox_inches="tight",dpi=dpi)
 
     def ShowDendrogram(self,z,p=100):
-        plt.title('Hierarchical Clustering Dendrogram')
-        plt.xlabel('sample index')
-        plt.ylabel('distance')
         dendrogram(
             z,
             truncate_mode='lastp',  # show only the last p merged clusters
             p=p,  # show only the last p merged clusters
-            show_leaf_counts=True,  # otherwise numbers in brackets are counts
+            show_leaf_counts=False,  # otherwise numbers in brackets are counts
             leaf_rotation=90.,
             leaf_font_size=6,
             show_contracted=False  # to get a distribution impression in truncated branches
         )
-        plt.show()
+        #plt.show()
+        plt.xticks([],size=12)
+        plt.yticks([],size=12)
+        plt.savefig("wardDend2016-08-28", bbox_inches="tight", dpi=300)
 
     # show concept frequency line graph by date
     def ConceptFrequencyLineGraph(self,conceptNames,method=None):
@@ -1314,7 +1526,7 @@ class EventRelationships:
         plt.show()
 
     # show concept frequency heatmap by date
-    def ConceptFrequencyHeatmap(self,n_days=100,n_concepts=50):
+    def ConceptFrequencyHeatmap(self,n_days=100,n_concepts=50,out=None,fontSize=12):
         heatmap = self.GetHeatmap()
 
         conceptCount = OrderedDict(self.GetConceptCount())
@@ -1323,7 +1535,7 @@ class EventRelationships:
 
         shown = np.empty((n_concepts, n_days))
         for i,id in enumerate(conceptIds):
-            t = heatmap.loc[int(id),heatmap.columns[:n_days]].values
+            t = heatmap.loc[int(id),heatmap.columns[-n_days:]].values
             normalizer = np.vectorize(normalize)
             t=normalizer(t,t.min(),t.max())
             shown[i] = t
@@ -1340,12 +1552,20 @@ class EventRelationships:
 
         # labels
         ax.set_yticklabels(conceptNames, minor=False)
-        plt.xticks(rotation=90)
-        ax.set_xticklabels(heatmap.columns[:n_days],minor=False)
+        plt.yticks(size=fontSize)
+        plt.xticks(rotation=90,size=fontSize)
+        xticklabels = heatmap.columns.values[-n_days:]
+        xticklabels = [lab if i%7==0 else "" for i,lab in enumerate(xticklabels)]
+        ax.set_xticklabels(xticklabels,minor=False)
 
-        plt.show()
+
         #fig.savefig("heatmap.eps", format="eps", dpi=1000)
         #fig.savefig("heatmap.svg", format="svg", dpi=1200)
+
+        if out is not None:
+            fig.set_size_inches(8, 10)
+            plt.savefig(out,bbox_inches="tight",dpi=300)
+        #plt.show()
 
     def PlotBinomialDistribution(self):
         conceptCount = self.GetConceptCount()
@@ -1355,7 +1575,7 @@ class EventRelationships:
 
         self.Plot(freqs,type="line")
 
-    def PlotEventDateRange(self):
+    def PlotEventDateRangePerDay(self):
         events=self.GetEvents()
         dateMin = str_to_date(events.date.min())
         dateMax = str_to_date(events.date.max())
@@ -1371,6 +1591,63 @@ class EventRelationships:
             i+=1
 
         self.Plot(counts,x_labels=x_labels,title="Št. dogodkov na dan",xLabel="Datum",yLabel="Št. dogodkov")
+
+    def PlotEventDateRangeErrorBars(self):
+        events,_=self.TrainTestSplit("2017-01-01")
+        dateMin = str_to_date(events.date.min())
+        dateMax = str_to_date(events.date.max())
+        dateRange = pd.date_range(dateMin, dateMax).tolist()
+        dates=pd.to_datetime(events.date)
+        counts = [[],[],[],[],[],[],[]]
+        errors = [[],[],[],[],[],[],[]]
+        daysOfTheWeek = ["ponedeljek","torek","sreda","četrtek","petek","sobota","nedelja"]
+        i=0
+        for date in dateRange:
+            weekday = date.weekday()
+            cond = (dates == date).values
+            counts[weekday].append(sum(cond))
+            errors[weekday].append(sum(cond))
+            i+=1
+
+        y=np.array([np.mean(count) for count in counts])
+        x=np.arange(0,7)
+        yerr = np.array([math.sqrt(sum([(error-mean)**2 for error in errors[weekday]])/len(errors[weekday])) for weekday,mean in enumerate(y)])
+        xerr = None
+        self.PlotErrorBars(x,y,xerr,yerr,daysOfTheWeek,out="stdtest12.png",fontSize=12)
+
+    def PlotErrorBars(self,x,y,xerr,yerr,xlabels,out=None,fontSize=12,dpi=300):
+        fig, ax = plt.subplots()
+        ax.errorbar(x, y, yerr=yerr,fmt='o',ecolor="k",capsize=5)
+        ax.set_xticks(range(len(xlabels)))
+        ax.set_xticklabels(xlabels)
+        plt.ylim(ymin=0)
+
+        plt.xticks(size=fontSize)
+        plt.yticks(size=fontSize)
+
+        if out is not None:
+            plt.savefig(out,bbox_inches="tight",dpi=dpi)
+
+        #plt.show()
+
+    def PlotEventDateRangePerWeek(self):
+        events, _ = self.TrainTestSplit("2017-01-01")
+        dateMin = str_to_date(events.date.min())
+        dateMax = str_to_date(events.date.max())
+
+        dateRange = pd.date_range(dateMin, dateMax, freq="w").tolist()
+        dates=pd.to_datetime(events.date)
+        counts = []
+        x_labels = []
+        i=0
+        for date in dateRange:
+            cond = (dates == date).values
+            counts.append(sum(cond))
+            x_labels.append(date_to_str(date) if i%4==0 else "")
+            i+=1
+
+        #self.Plot(counts,x_labels=x_labels,title="Št. dogodkov na dan",xLabel="Datum",yLabel="Št. dogodkov")
+        self.Plot(counts,x_labels=x_labels,out="test12.png",fontSize=12)
 
     def PlotDistribution(self,y):
         size = len(y)
@@ -1390,7 +1667,7 @@ class EventRelationships:
 
     def PlotConceptTypes(self):
         concepts = self.GetConcepts(index_col=0)
-        data = OrderedDict({"wiki":0,"loc":0,"org":0,"person":0})
+        data = OrderedDict({"wiki":0,"person":0,"loc":0,"org":0})
         #for _,event in events.iterrows():
         #    cpts = string_to_object(event.concepts)
         #    for id,score in cpts:
@@ -1401,7 +1678,7 @@ class EventRelationships:
             ctype = concept.type
             data[ctype] +=1
 
-        self.Plot(list(data.values()),x_labels=["Pojem","Lokacija","Organizacija","Oseba"],title="Število različnih konceptov po kategorijah",xLabel="Tip koncepta",yLabel="Št. različnih konceptov")
+        self.Plot(list(data.values()),x_labels=["Pojem","Oseba","Lokacija","Organizacija"],rotate=False,fontSize=12,out="conceptDistribution.png",dpi=300)
 
     def PlotCoefficients(self,onevsrest,classifier_index, dset, top_features=20):
         from dset import Dset
@@ -1414,13 +1691,17 @@ class EventRelationships:
         top_negative_coefficients = np.argsort(coef)[:top_features]
         top_coefficients = np.hstack([top_negative_coefficients, top_positive_coefficients])
         # create plot
-        plt.figure(figsize=(15, 5))
-        colors = ["red" if c < 0 else "blue" for c in coef[top_coefficients]]
-        plt.bar(np.arange(2 * top_features), coef[top_coefficients], color=colors)
+        fig=plt.figure(figsize=(5, 10))
+        colors = ["darkblue" if c < 0 else "darkred" for c in coef[top_coefficients]]
+        plt.barh(np.arange(2 * top_features), coef[top_coefficients], color=colors)
+        #plt.barh(np.arange(2 * top_features), coef[top_coefficients])
         feature_names = np.array(feature_names)
-        plt.xticks(np.arange(0, 1 + 2 * top_features), feature_names[top_coefficients], rotation=40, ha="right")
+        plt.yticks(np.arange(0, 1 + 2 * top_features), feature_names[top_coefficients], ha="right",size=12)
+        plt.xticks([])
         plt.title(dset.GetFeatureNames(DsetAxis.Y)[classifier_index])
-        plt.show()
+        #plt.show()
+        #fig.set_size_inches(7, 10)
+        plt.savefig("100cLinearSvmRefugeesOfTheSyrianCivilWar14dTop20Features2016-08-28Scaled.png",bbox_inches="tight",dpi=300)
 
     def PlotSVCCoefficients(self,window_size=14,n_clusters=100,date="2016-08-28",cindex=0,top_features=20):
         from dset import Dset

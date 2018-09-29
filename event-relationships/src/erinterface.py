@@ -33,10 +33,11 @@ class ErInterface(EventRelationships):
         return res
 
     # returns an iterator
-    def GetEventsIter(self, categories):
+    def GetEventsIter(self, categories,dateStart="2017-01-01",dateEnd="2017-03-01"):
+    #def GetEventsIter(self, categories,dateStart="2017-03-01",dateEnd="2017-04-30"):
         categoryURIs = [self.er.getCategoryUri(cat) for cat in categories]
 
-        q = QueryEventsIter(categoryUri=QueryItems.OR(categoryURIs),lang="eng",dateStart="2016-09-01",dateEnd="2016-12-31",minArticlesInEvent=10)
+        q = QueryEventsIter(categoryUri=QueryItems.OR(categoryURIs),lang="eng",dateStart=dateStart,dateEnd=dateEnd,minArticlesInEvent=10)
         res = q.execQuery(self.er,sortBy="date",sortByAsc=True,count=50,returnInfo=self.returnInfo)
 
         return res
@@ -55,7 +56,7 @@ class ErInterface(EventRelationships):
     ### Events CSV #########################################################################################################################
 
     def GenerateEventsCsv(self, eventIter):
-        headers = ["eventId", "uri", "title","summary", "date", "location","socialScore","articleCount", "concepts","categories"]
+        headers = ["eventId", "uri", "title","summary", "date", "location","socialScore","articleCount","concepts","categories"]
 
         if file_exists(os.path.join(self.data_subdir, self.events_filename)+".csv"):
             self.UpdateEvents(eventIter)
@@ -63,7 +64,7 @@ class ErInterface(EventRelationships):
             self.CreateEvents(eventIter, headers)
 
     def GenerateEventCsvLine(self, event):
-        eventId=str(event["id"])
+        eventId=str(event["id"]) if "id" in event else event["uri"]
         uri = event["uri"]
         title = event["title"]
         title = title["eng"].replace(self.sep, ",") if "eng" in title else title[list(title.keys())[0]].replace(
@@ -73,13 +74,14 @@ class ErInterface(EventRelationships):
             self.sep, ",")
         summary = summary.replace(self.nl, " ")
         summary = summary.replace("\"","")
+        summary = summary.replace("'","")
         date = event["eventDate"]
         location = json.dumps(event["location"])
         socialScore = str(event["socialScore"])
         articleCount = str(event["totalArticleCount"])
-        concepts = ",".join(map(lambda c: "(" + str(c["id"]) + "," + str(c["score"]) + ")", event["concepts"])) if event[
+        concepts = ",".join(map(lambda c: "(\"" + str(c["uri"]) + "\"," + str(c["score"]) + ")", event["concepts"])) if event[
             "concepts"] else "null"
-        categories = ",".join(map(lambda c: "(" + str(c["id"]) + "," + str(c["wgt"]) + ")", event["categories"])) if event[
+        categories = ",".join(map(lambda c: "(\"" + str(c["uri"]) + "\"," + str(c["wgt"]) + ")", event["categories"])) if event[
             "categories"] else "null"
         return (
             eventId + self.sep +
@@ -109,12 +111,12 @@ class ErInterface(EventRelationships):
 
     def UpdateEvents(self, eventIter):
         existingEvents = self.GetEvents()
-        existingIds = set(existingEvents.eventId)
+        existingUris = set(existingEvents.uri)
 
         with open(os.path.join(self.data_subdir, self.events_filename)+".csv", "a", encoding=self.enc, newline=self.nl) as f:
             for event in eventIter:
                 try:
-                    if 'warning' not in event and event["concepts"] and event["id"] not in existingIds:
+                    if "warning" not in event and event["concepts"] and event["uri"] not in existingUris:
                         f.write(self.GenerateEventCsvLine(event))
                         self.GenerateConceptsCsv(event["concepts"])
                         self.GenerateCategoriesCsv(event["categories"])
@@ -122,7 +124,7 @@ class ErInterface(EventRelationships):
                     print(json.dumps(event))
                     raise
 
-    #todo updates dataset with new columns but will not work with events older than 1 month
+    #todo updates dataset with new columns
     def ExpandEvents(self):
         existingEvents = self.GetEvents()
         existingUris = existingEvents["uri"].tolist()
@@ -192,7 +194,7 @@ class ErInterface(EventRelationships):
             self.CreateConcepts(concepts, headers)
 
     def GenerateConceptCsvLine(self, concept):
-        conceptId = str(concept["id"])
+        conceptId = str(concept["id"]) if "id" in concept else concept["uri"]
         uri = concept["uri"].replace(self.sep, ",")
         label = concept["label"]
         label = label["eng"].replace(self.sep, ",") if "eng" in label else label[list(label.keys())[0]].replace(self.sep, ",")
@@ -216,13 +218,14 @@ class ErInterface(EventRelationships):
 
     def UpdateConcepts(self, concepts):
         existingConcepts = self.GetConcepts()
-        existingIds = set(existingConcepts.conceptId)
+        existingUris = set(existingConcepts.uri)
 
         with open(os.path.join(self.data_subdir, self.concepts_filename)+".csv", "a", encoding=self.enc, newline=self.nl) as f:
             for concept in concepts:
                 try:
-                    if concept["id"] not in existingIds:
-                        f.write(self.GenerateConceptCsvLine(concept))
+                    if concept["uri"] not in existingUris:
+                        x = self.GenerateConceptCsvLine(concept)
+                        f.write(x)
                 except KeyError as e:
                     print(json.dumps(concept))
                     raise
@@ -266,7 +269,7 @@ class ErInterface(EventRelationships):
             self.CreateCategories(categories, headers)
 
     def GenerateCategoryCsvLine(self, category):
-        categoryId = str(category["id"])
+        categoryId = str(category["id"]) if "id" in category else category["uri"]
         uri = category["uri"]
         return (
             categoryId + self.sep +
@@ -285,12 +288,12 @@ class ErInterface(EventRelationships):
 
     def UpdateCategories(self, categories):
         existingCategories = self.GetCategories()
-        existingIds = set(existingCategories.categoryId)
+        existingUris = set(existingCategories.uri)
 
         with open(os.path.join(self.data_subdir, self.categories_filename) + ".csv", "a", encoding=self.enc, newline=self.nl) as f:
             for category in categories:
                 try:
-                    if category["id"] not in existingIds:
+                    if category["uri"] not in existingUris:
                         f.write(self.GenerateCategoryCsvLine(category))
                 except KeyError as e:
                     print(json.dumps(category))
